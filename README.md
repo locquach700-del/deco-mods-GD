@@ -42,7 +42,7 @@ The GitHub Actions workflow builds three packages on every push and pull request
 - Android armv7 (`Android32`)
 - Android arm64 (`Android64`)
 
-It uses `geode-sdk/build-geode-mod` and uploads the resulting `.geode` packages as separate workflow artifacts.
+It uses `geode-sdk/build-geode-mod`, Android NDK `29.0.14206865` (Clang 21), and uploads the resulting `.geode` packages as separate workflow artifacts.
 
 Local build requirements: CMake 3.21+, the Geode 5.11.2 SDK, and the `GEODE_SDK` environment variable pointing to that SDK. Configure with the same Geometry Dash version values used by CI:
 
@@ -50,6 +50,6 @@ Local build requirements: CMake 3.21+, the Geode 5.11.2 SDK, and the `GEODE_SDK`
 cmake -B build -DCMAKE_BUILD_TYPE=Release \
   -DGEODE_GD_VERSION=2.2081 \
   -DGEODE_COMP_GD_VERSION=22081 \
-  -DGEODE_DISABLE_FMT_CONSTEVAL=ON
+  -DCMAKE_CXX_FLAGS=-DFMT_CONSTEVAL=
 cmake --build build --config Release
 ```
