@@ -3,6 +3,8 @@
 #include <Geode/binding/CCMenuItemSpriteExtra.hpp>
 #include <Geode/ui/TextInput.hpp>
 #include <Geode/utils/Keyboard.hpp>
+#include <Geode/utils/general.hpp>
+#include <Geode/cocos/support/zip_support/ZipUtils.h>
 
 #include <algorithm>
 #include <cctype>
@@ -11,25 +13,19 @@
 #include <string_view>
 #include <vector>
 
-#if defined(GEODE_IS_WINDOWS)
-#  define NOMINMAX
-#  include <windows.h>
-#elif defined(GEODE_IS_ANDROID)
-#  include <jni.h>
-#  include <Geode/cocos/platform/android/jni/JniHelper.h>
-#endif
-
 using namespace geode::prelude;
 
 class StyleScannerPopup;
 
 namespace {
-    constexpr std::string_view kCodeMagic = "STY1";
-    constexpr size_t kMaxCodeBytes = 4 * 1024 * 1024;
-    constexpr size_t kMaxSettingsBytes = 512 * 1024;
-    constexpr size_t kMaxObjectBytes = 12 * 1024;
-    constexpr size_t kMaxObjects = 2500;
-    constexpr size_t kMaxNameBytes = 1024;
+    constexpr std::string_view kCodeMagic = "STY2";
+    constexpr std::string_view kLegacyCodeMagic = "STY1";
+    constexpr size_t kMaxCodeBytes = 12 * 1024 * 1024;
+    constexpr size_t kMaxPayloadBytes = 64 * 1024 * 1024;
+    constexpr size_t kMaxSettingsBytes = 1024 * 1024;
+    constexpr size_t kMaxObjectBytes = 64 * 1024;
+    constexpr size_t kMaxObjects = 50000;
+    constexpr size_t kMaxNameBytes = 4096;
 
     struct StyleData {
         std::string levelName;
@@ -142,12 +138,67 @@ namespace {
         return fields;
     }
 
+    // Copy visual construction, not playable mechanics. Regular solid blocks,
+    // slopes and breakable blocks are included as visual geometry; imported
+    // copies are changed to NoTouch so they cannot change the target gameplay.
+    // Hazards, portals, pads, rings, collectibles, gameplay triggers and audio
+    // triggers are deliberately not included.
     bool isStyleObject(GameObject* object) {
         if (!object) return false;
-        return object->m_isDecoration ||
-            object->m_isDecoration2 ||
-            object->m_isColorTrigger ||
-            object->isColorTrigger();
+
+        if (object->isColorTrigger() || object->m_isColorTrigger) return true;
+        if (object->m_isDecoration || object->m_isDecoration2) return true;
+
+        switch (object->m_objectType) {
+            case GameObjectType::Solid:
+            case GameObjectType::Decoration:
+            case GameObjectType::Slope:
+            case GameObjectType::Breakable:
+                return object->m_classType != GameObjectClassType::Effect;
+            default:
+                return false;
+        }
+    }
+
+    void appendU32(std::string& output, uint32_t value) {
+        output.push_back(static_cast<char>(value & 0xff));
+        output.push_back(static_cast<char>((value >> 8) & 0xff));
+        output.push_back(static_cast<char>((value >> 16) & 0xff));
+        output.push_back(static_cast<char>((value >> 24) & 0xff));
+    }
+
+    bool readU32(std::string_view input, size_t& cursor, uint32_t& value) {
+        if (cursor > input.size() || input.size() - cursor < 4) return false;
+        value =
+            static_cast<uint32_t>(static_cast<uint8_t>(input[cursor])) |
+            (static_cast<uint32_t>(static_cast<uint8_t>(input[cursor + 1])) << 8) |
+            (static_cast<uint32_t>(static_cast<uint8_t>(input[cursor + 2])) << 16) |
+            (static_cast<uint32_t>(static_cast<uint8_t>(input[cursor + 3])) << 24);
+        cursor += 4;
+        return true;
+    }
+
+    bool appendField(std::string& output, std::string_view field) {
+        if (field.size() > UINT32_MAX) return false;
+        if (output.size() > kMaxPayloadBytes - 4 ||
+            field.size() > kMaxPayloadBytes - output.size() - 4) return false;
+        appendU32(output, static_cast<uint32_t>(field.size()));
+        output.append(field.data(), field.size());
+        return true;
+    }
+
+    bool readField(
+        std::string_view input,
+        size_t& cursor,
+        std::string& output,
+        size_t maxFieldBytes
+    ) {
+        uint32_t size = 0;
+        if (!readU32(input, cursor, size) || size > maxFieldBytes) return false;
+        if (cursor > input.size() || size > input.size() - cursor) return false;
+        output.assign(input.data() + cursor, size);
+        cursor += size;
+        return true;
     }
 
     bool validObjectRecord(std::string_view record) {
@@ -170,38 +221,85 @@ namespace {
             data.creatorName.size() > kMaxNameBytes ||
             data.settings.size() > kMaxSettingsBytes ||
             data.objects.size() > kMaxObjects) {
-            error = "This style is larger than the supported export limits.";
+            error = "This style exceeds the safe export limits (50,000 objects / 64 MiB).";
             return false;
         }
 
-        code.clear();
-        code.reserve(256 + data.settings.size() * 2);
-        code.append(kCodeMagic);
-        code.push_back('|');
-        code += base64Encode(data.levelName);
-        code.push_back('|');
-        code += base64Encode(data.creatorName);
-        code.push_back('|');
-        code += base64Encode(data.settings);
+        std::string payload;
+        payload.reserve(std::min<size_t>(kMaxPayloadBytes, 256 + data.settings.size() + data.objects.size() * 96));
+        if (!appendField(payload, data.levelName) ||
+            !appendField(payload, data.creatorName) ||
+            !appendField(payload, data.settings)) {
+            error = "The style header is too large.";
+            return false;
+        }
 
+        appendU32(payload, static_cast<uint32_t>(data.objects.size()));
         for (auto const& object : data.objects) {
-            if (object.empty() || object.size() > kMaxObjectBytes ||
-                !validObjectRecord(object)) {
-                error = "The level contains a decoration record that cannot be exported safely.";
+            if (object.empty() || object.size() > kMaxObjectBytes || !validObjectRecord(object)) {
+                error = "A visual object record is invalid or too large.";
                 return false;
             }
-            code.push_back('|');
-            code += base64Encode(object);
-            if (code.size() > kMaxCodeBytes) {
-                error = "The exported style exceeds the 4 MiB code limit.";
+            if (!appendField(payload, object)) {
+                error = "The level exceeds the 64 MiB uncompressed style limit.";
                 return false;
             }
         }
+
+        // Deflate the complete payload once. This is much smaller than
+        // base64-encoding every object separately and keeps clipboard pasting fast.
+        auto compressed = cocos2d::ZipUtils::compressString(payload, false, 9, 0);
+        if (compressed.empty()) {
+            error = "The style data could not be compressed.";
+            return false;
+        }
+
+        code = std::string(kCodeMagic);
+        code.push_back('|');
+        code += cocos2d::ZipUtils::base64URLEncode(compressed);
 
         if (code.size() > kMaxCodeBytes) {
-            error = "The exported style exceeds the 4 MiB code limit.";
+            error = "The compressed style exceeds the 12 MiB code limit.";
             return false;
         }
+        return true;
+    }
+
+    bool decodeLegacyStyle(
+        std::vector<std::string_view> const& fields,
+        StyleData& data,
+        std::string& error
+    ) {
+        if (fields.size() < 4 || fields.size() - 4 > kMaxObjects) {
+            error = "The legacy style code has an invalid object count.";
+            return false;
+        }
+
+        StyleData parsed;
+        if (!base64Decode(fields[1], parsed.levelName, kMaxNameBytes) ||
+            !base64Decode(fields[2], parsed.creatorName, kMaxNameBytes) ||
+            !base64Decode(fields[3], parsed.settings, kMaxSettingsBytes)) {
+            error = "The legacy style header or palette data is invalid.";
+            return false;
+        }
+
+        parsed.objects.reserve(fields.size() - 4);
+        size_t decodedObjectBytes = 0;
+        for (size_t i = 4; i < fields.size(); ++i) {
+            std::string object;
+            if (!base64Decode(fields[i], object, kMaxObjectBytes) || !validObjectRecord(object)) {
+                error = "A decoration record in the legacy code is invalid.";
+                return false;
+            }
+            decodedObjectBytes += object.size();
+            if (decodedObjectBytes > kMaxPayloadBytes) {
+                error = "Decoded legacy decoration data is too large.";
+                return false;
+            }
+            parsed.objects.emplace_back(std::move(object));
+        }
+
+        data = std::move(parsed);
         return true;
     }
 
@@ -218,202 +316,95 @@ namespace {
         }
 
         const auto fields = splitCode(normalized);
-        if (fields.size() < 4 || fields[0] != kCodeMagic) {
-            error = "This is not a supported StyleScanner code (expected STY1).";
-            return false;
-        }
-        if (fields.size() - 4 > kMaxObjects) {
-            error = "The code contains too many decoration records.";
+        if (fields.empty()) {
+            error = "The pasted style code is empty.";
             return false;
         }
 
+        if (fields[0] == kLegacyCodeMagic) {
+            return decodeLegacyStyle(fields, data, error);
+        }
+        if (fields[0] != kCodeMagic || fields.size() != 2) {
+            error = "Unsupported style code. Expected STY2 or an older STY1 code.";
+            return false;
+        }
+
+        const std::string compressed = cocos2d::ZipUtils::base64URLDecode(std::string(fields[1]));
+        if (compressed.empty()) {
+            error = "The compressed style code is invalid.";
+            return false;
+        }
+
+        const std::string payload = cocos2d::ZipUtils::decompressString(compressed, false, 0);
+        if (payload.empty() || payload.size() > kMaxPayloadBytes) {
+            error = "The style archive is damaged or exceeds the 64 MiB import limit.";
+            return false;
+        }
+
+        std::string_view view(payload);
+        size_t cursor = 0;
         StyleData parsed;
-        if (!base64Decode(fields[1], parsed.levelName, kMaxNameBytes) ||
-            !base64Decode(fields[2], parsed.creatorName, kMaxNameBytes) ||
-            !base64Decode(fields[3], parsed.settings, kMaxSettingsBytes)) {
-            error = "The code header or palette data is invalid.";
+        if (!readField(view, cursor, parsed.levelName, kMaxNameBytes) ||
+            !readField(view, cursor, parsed.creatorName, kMaxNameBytes) ||
+            !readField(view, cursor, parsed.settings, kMaxSettingsBytes)) {
+            error = "The style header or visual settings are invalid.";
             return false;
         }
 
-        parsed.objects.reserve(fields.size() - 4);
-        size_t decodedObjectBytes = 0;
-        for (size_t i = 4; i < fields.size(); ++i) {
+        uint32_t count = 0;
+        if (!readU32(view, cursor, count) || count > kMaxObjects) {
+            error = "The style archive contains too many visual objects.";
+            return false;
+        }
+
+        parsed.objects.reserve(count);
+        for (uint32_t i = 0; i < count; ++i) {
             std::string object;
-            if (!base64Decode(fields[i], object, kMaxObjectBytes) ||
-                !validObjectRecord(object)) {
-                error = "A decoration record in the code is invalid.";
-                return false;
-            }
-            decodedObjectBytes += object.size();
-            if (decodedObjectBytes > kMaxCodeBytes) {
-                error = "Decoded decoration data is too large.";
+            if (!readField(view, cursor, object, kMaxObjectBytes) || !validObjectRecord(object)) {
+                error = "A visual object record in the archive is invalid.";
                 return false;
             }
             parsed.objects.emplace_back(std::move(object));
+        }
+
+        if (cursor != view.size()) {
+            error = "The style archive contains unexpected trailing data.";
+            return false;
         }
 
         data = std::move(parsed);
         return true;
     }
 
-    bool readStyleHeader(std::string_view rawCode, std::string& levelName, std::string& creatorName) {
-        if (rawCode.size() > kMaxCodeBytes + 4096) return false;
-        const std::string normalized = stripWhitespace(rawCode);
-        const auto fields = splitCode(normalized);
-        if (fields.size() < 4 || fields[0] != kCodeMagic) return false;
-        return base64Decode(fields[1], levelName, kMaxNameBytes) &&
-            base64Decode(fields[2], creatorName, kMaxNameBytes);
-    }
-
-    bool scanLayer(GJBaseGameLayer* source, StyleData& output, std::string& error) {
-        if (!source || !source->m_level) {
-            error = "No active Geometry Dash level was found.";
-            return false;
-        }
-
-        output = {};
-        output.levelName = source->m_level->m_levelName.c_str();
-        output.creatorName = source->m_level->m_creatorName.c_str();
-
-        if (source->m_levelSettings) {
-            output.settings = source->m_levelSettings->getSaveString().c_str();
-        } else {
-            output.settings = source->m_level->generateSettingsString().c_str();
-        }
-
-        if (output.settings.size() > kMaxSettingsBytes) {
-            error = "The level settings/palette data exceeds the export size limit.";
-            return false;
-        }
-
-        if (!source->m_objects) return true;
-
-        const unsigned int objectCount = source->m_objects->count();
-        output.objects.reserve(std::min<size_t>(objectCount, kMaxObjects));
-
-        for (unsigned int i = 0; i < objectCount; ++i) {
-            auto* object = static_cast<GameObject*>(source->m_objects->objectAtIndex(i));
-            if (!isStyleObject(object)) continue;
-
-            const auto saved = object->getSaveString(source);
-            std::string record = saved.c_str();
-            if (record.empty()) continue;
-
-            if (record.size() > kMaxObjectBytes || output.objects.size() >= kMaxObjects) {
-                error = "The level has more decoration data than StyleScanner can safely export.";
-                return false;
-            }
-            if (!validObjectRecord(record)) continue;
-            output.objects.emplace_back(std::move(record));
-        }
-        return true;
-    }
-
-    bool applyVisualSettings(LevelEditorLayer* editor, std::string const& settingsString) {
-        if (!editor || !editor->m_levelSettings || settingsString.empty()) return false;
-
-        auto* imported = LevelSettingsObject::objectFromString(settingsString);
-        if (!imported) return false;
-
-        auto* current = editor->m_levelSettings;
-
-        // Copy visual settings only. Gameplay start mode, speed, dual, and platformer mode are untouched.
-        current->m_backgroundIndex = imported->m_backgroundIndex;
-        current->m_groundIndex = imported->m_groundIndex;
-        current->m_middleGroundIndex = imported->m_middleGroundIndex;
-        current->m_groundLineIndex = imported->m_groundLineIndex;
-        current->m_fontIndex = imported->m_fontIndex;
-        current->m_colorPage = imported->m_colorPage;
-
-        if (imported->m_effectManager && current->m_effectManager) {
-            editor->transferDefaultColors(imported->m_effectManager, current->m_effectManager);
-        }
-
-        editor->levelSettingsUpdated();
+    bool readStyleHeader(
+        std::string_view rawCode,
+        std::string& levelName,
+        std::string& creatorName
+    ) {
+        StyleData parsed;
+        std::string error;
+        if (!decodeStyle(rawCode, parsed, error)) return false;
+        levelName = std::move(parsed.levelName);
+        creatorName = std::move(parsed.creatorName);
         return true;
     }
 
     bool copyToClipboard(std::string const& text) {
-#if defined(GEODE_IS_WINDOWS)
-        if (text.empty()) return false;
+        return !text.empty() && geode::utils::clipboard::write(text);
+    }
 
-        const int wideLength = MultiByteToWideChar(
-            CP_UTF8, MB_ERR_INVALID_CHARS, text.data(),
-            static_cast<int>(text.size()), nullptr, 0
-        );
-        if (wideLength <= 0) return false;
-
-        const SIZE_T bytes = (static_cast<SIZE_T>(wideLength) + 1) * sizeof(wchar_t);
-        HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
-        if (!memory) return false;
-
-        auto* wide = static_cast<wchar_t*>(GlobalLock(memory));
-        if (!wide) {
-            GlobalFree(memory);
-            return false;
-        }
-
-        const int converted = MultiByteToWideChar(
-            CP_UTF8, MB_ERR_INVALID_CHARS, text.data(),
-            static_cast<int>(text.size()), wide, wideLength
-        );
-        if (converted != wideLength) {
-            GlobalUnlock(memory);
-            GlobalFree(memory);
-            return false;
-        }
-        wide[wideLength] = L'\0';
-        GlobalUnlock(memory);
-
-        if (!OpenClipboard(nullptr)) {
-            GlobalFree(memory);
-            return false;
-        }
-        EmptyClipboard();
-        HANDLE result = SetClipboardData(CF_UNICODETEXT, memory);
-        CloseClipboard();
-
-        if (!result) {
-            GlobalFree(memory);
-            return false;
-        }
-        return true;
-#elif defined(GEODE_IS_ANDROID)
-        if (text.empty()) return false;
-
-        cocos2d::JniMethodInfo method;
-        if (!cocos2d::JniHelper::getStaticMethodInfo(
-                method,
-                "com/geode/launcher/utils/GeodeUtils",
-                "writeClipboard",
-                "(Ljava/lang/String;)V")) {
-            return false;
-        }
-
-        jstring value = method.env->NewStringUTF(text.c_str());
-        if (!value) {
-            method.env->DeleteLocalRef(method.classID);
-            return false;
-        }
-
-        method.env->CallStaticVoidMethod(method.classID, method.methodID, value);
-        const bool failed = method.env->ExceptionCheck();
-        if (failed) method.env->ExceptionClear();
-        method.env->DeleteLocalRef(value);
-        method.env->DeleteLocalRef(method.classID);
-        return !failed;
-#else
-        (void)text;
-        return false;
-#endif
+    std::string readFromClipboard() {
+        return geode::utils::clipboard::read();
     }
 }
 
 class StyleScannerPopup final : public geode::Popup {
 protected:
     geode::TextInput* m_exportInput = nullptr;
-    geode::TextInput* m_importInput = nullptr;
     std::string m_exportCode;
+    std::string m_importCode;
+    StyleData m_importData;
+    cocos2d::CCLabelBMFont* m_importPreview = nullptr;
     cocos2d::CCLabelBMFont* m_metadataLabel = nullptr;
     cocos2d::CCLabelBMFont* m_statusLabel = nullptr;
 
@@ -422,130 +413,115 @@ protected:
     }
 
     bool init() override {
-        constexpr float popupWidth = 440.f;
-        constexpr float popupHeight = 420.f;
+        constexpr float popupWidth = 400.f;
+        constexpr float popupHeight = 340.f;
 
         if (!geode::Popup::init(popupWidth, popupHeight)) return false;
 
         auto const winSize = CCDirector::get()->getWinSize();
         m_mainLayer->setPosition(winSize / 2.f);
 
-        // Keep the panel centered and slightly smaller. On smaller game windows,
-        // scale it down enough to keep every control inside the visible area.
         const float fitScale = std::min(
-            winSize.width / (popupWidth + 36.f),
-            winSize.height / (popupHeight + 36.f)
+            (winSize.width - 20.f) / popupWidth,
+            (winSize.height - 20.f) / popupHeight
         );
-        const float uiScale = std::clamp(fitScale, 0.62f, 0.90f);
+        const float uiScale = std::clamp(fitScale, 0.48f, 0.78f);
         m_mainLayer->setScale(uiScale);
 
-        this->setTitle("Style Scanner & Deco Copier", "goldFont.fnt", 0.52f, 22.f);
+        this->setTitle("Style Scanner", "goldFont.fnt", 0.52f, 22.f);
 
-        // Geode's default close button is in the top-left and relatively large.
-        // Move it to the top-right and reduce its size.
+        // Pin the close button to the actual popup bounds and draw it above
+        // every other control so the X stays visible on small windows.
         if (m_closeBtn) {
-            m_closeBtn->setPosition({popupWidth - 19.f, popupHeight - 19.f});
-            m_closeBtn->setScale(0.52f);
+            auto const size = m_mainLayer->getContentSize();
+            m_closeBtn->setPosition({size.width - 17.f, size.height - 17.f});
+            m_closeBtn->setScale(0.50f);
+            m_closeBtn->setZOrder(10000);
         }
 
         auto* exportTitle = cocos2d::CCLabelBMFont::create(
-            "1. SCAN / EXPORT STYLE", "goldFont.fnt"
+            "1. SCAN / EXPORT VISUAL STYLE", "goldFont.fnt"
         );
         if (!exportTitle) return false;
-        exportTitle->setScale(0.46f);
-        m_mainLayer->addChildAtPosition(exportTitle, geode::Anchor::Center, {0.f, 157.f});
+        exportTitle->setScale(0.43f);
+        m_mainLayer->addChildAtPosition(exportTitle, geode::Anchor::Center, {0.f, 127.f});
 
-        m_exportInput = geode::TextInput::create(380.f, "Code appears here after scanning", "bigFont.fnt");
+        m_exportInput = geode::TextInput::create(340.f, "Scan a level to prepare its code", "bigFont.fnt");
         if (!m_exportInput) return false;
         m_exportInput->setCommonFilter(geode::CommonFilter::Any);
-        m_exportInput->setMaxCharCount(180);
+        m_exportInput->setMaxCharCount(120);
         m_exportInput->setTextAlign(geode::TextInputAlign::Left);
-        m_mainLayer->addChildAtPosition(m_exportInput, geode::Anchor::Center, {0.f, 119.f});
-        // Keep the preview readable. Disabling Geode TextInput can make its
-        // text appear dim/blank depending on the platform theme.
+        m_mainLayer->addChildAtPosition(m_exportInput, geode::Anchor::Center, {0.f, 91.f});
         m_exportInput->setEnabled(true);
 
         auto* scanButton = CCMenuItemSpriteExtra::create(
-            ButtonSprite::create("Scan Level", "goldFont.fnt", "GJ_button_01.png", 0.72f),
+            ButtonSprite::create("Scan Level", "goldFont.fnt", "GJ_button_01.png", 0.62f),
             this,
             menu_selector(StyleScannerPopup::onScan)
         );
         if (!scanButton) return false;
-        scanButton->setPosition({popupWidth / 2.f - 94.f, popupHeight / 2.f + 72.f});
+        scanButton->setPosition({popupWidth / 2.f - 78.f, popupHeight / 2.f + 43.f});
         m_buttonMenu->addChild(scanButton);
 
         auto* copyButton = CCMenuItemSpriteExtra::create(
-            ButtonSprite::create("Copy Code", "goldFont.fnt", "GJ_button_02.png", 0.72f),
+            ButtonSprite::create("Copy Code", "goldFont.fnt", "GJ_button_02.png", 0.62f),
             this,
             menu_selector(StyleScannerPopup::onCopy)
         );
         if (!copyButton) return false;
-        copyButton->setPosition({popupWidth / 2.f + 94.f, popupHeight / 2.f + 72.f});
+        copyButton->setPosition({popupWidth / 2.f + 78.f, popupHeight / 2.f + 43.f});
         m_buttonMenu->addChild(copyButton);
 
         m_metadataLabel = cocos2d::CCLabelBMFont::create(
             "Source: [None]  |  Creator: [None]", "chatFont.fnt"
         );
         if (!m_metadataLabel) return false;
-        m_metadataLabel->setScale(0.42f);
-        m_metadataLabel->limitLabelWidth(390.f, 0.42f, 0.2f);
-        m_mainLayer->addChildAtPosition(m_metadataLabel, geode::Anchor::Center, {0.f, 31.f});
+        m_metadataLabel->setScale(0.38f);
+        m_metadataLabel->limitLabelWidth(350.f, 0.38f, 0.2f);
+        m_mainLayer->addChildAtPosition(m_metadataLabel, geode::Anchor::Center, {0.f, 5.f});
 
         auto* importTitle = cocos2d::CCLabelBMFont::create(
-            "2. PASTE / APPLY STYLE CODE", "goldFont.fnt"
+            "2. IMPORT STYLE", "goldFont.fnt"
         );
         if (!importTitle) return false;
-        importTitle->setScale(0.46f);
-        m_mainLayer->addChildAtPosition(importTitle, geode::Anchor::Center, {0.f, -20.f});
+        importTitle->setScale(0.43f);
+        m_mainLayer->addChildAtPosition(importTitle, geode::Anchor::Center, {0.f, -42.f});
 
-        m_importInput = geode::TextInput::create(380.f, "Paste your STY1 code here (Ctrl+V)", "bigFont.fnt");
-        if (!m_importInput) return false;
-        m_importInput->setCommonFilter(geode::CommonFilter::Any);
-        m_importInput->setMaxCharCount(kMaxCodeBytes);
-        m_importInput->setTextAlign(geode::TextInputAlign::Left);
-        m_importInput->setCallback([this](std::string const& value) {
-            this->updateMetadata(value);
-        });
-        m_mainLayer->addChildAtPosition(m_importInput, geode::Anchor::Center, {0.f, -59.f});
+        m_importPreview = cocos2d::CCLabelBMFont::create(
+            "No style code loaded. Copy code, then paste from clipboard.", "chatFont.fnt"
+        );
+        if (!m_importPreview) return false;
+        m_importPreview->setScale(0.38f);
+        m_importPreview->limitLabelWidth(350.f, 0.38f, 0.2f);
+        m_mainLayer->addChildAtPosition(m_importPreview, geode::Anchor::Center, {0.f, -76.f});
+
+        auto* pasteButton = CCMenuItemSpriteExtra::create(
+            ButtonSprite::create("Paste Code", "goldFont.fnt", "GJ_button_01.png", 0.60f),
+            this,
+            menu_selector(StyleScannerPopup::onPasteFromClipboard)
+        );
+        if (!pasteButton) return false;
+        pasteButton->setPosition({popupWidth / 2.f - 82.f, popupHeight / 2.f - 105.f});
+        m_buttonMenu->addChild(pasteButton);
 
         auto* applyButton = CCMenuItemSpriteExtra::create(
-            ButtonSprite::create("Apply Style to Editor Level", "goldFont.fnt", "GJ_button_03.png", 0.48f),
+            ButtonSprite::create("Apply Style", "goldFont.fnt", "GJ_button_03.png", 0.60f),
             this,
             menu_selector(StyleScannerPopup::onApply)
         );
         if (!applyButton) return false;
-        applyButton->setPosition({popupWidth / 2.f, popupHeight / 2.f - 112.f});
+        applyButton->setPosition({popupWidth / 2.f + 82.f, popupHeight / 2.f - 105.f});
         m_buttonMenu->addChild(applyButton);
 
         m_statusLabel = cocos2d::CCLabelBMFont::create(
-            "Open a level, then press Scan Level.", "chatFont.fnt"
+            "Open a level in the editor, then press Scan.", "chatFont.fnt"
         );
         if (!m_statusLabel) return false;
-        m_statusLabel->setScale(0.42f);
-        m_statusLabel->limitLabelWidth(390.f, 0.42f, 0.2f);
-        m_mainLayer->addChildAtPosition(m_statusLabel, geode::Anchor::Center, {0.f, -171.f});
+        m_statusLabel->setScale(0.38f);
+        m_statusLabel->limitLabelWidth(350.f, 0.38f, 0.2f);
+        m_mainLayer->addChildAtPosition(m_statusLabel, geode::Anchor::Center, {0.f, -140.f});
 
         return true;
-    }
-
-    void updateMetadata(std::string const& code) {
-        std::string levelName;
-        std::string creatorName;
-
-        if (!readStyleHeader(code, levelName, creatorName)) {
-            m_metadataLabel->setString(
-                "Source Style Name: [Invalid / incomplete]  |  Original Creator: [None]"
-            );
-            return;
-        }
-
-        if (levelName.empty()) levelName = "[Unnamed]";
-        if (creatorName.empty()) creatorName = "[Unavailable]";
-
-        const std::string label =
-            "Source Style Name: " + levelName + "  |  Original Creator: " + creatorName;
-        m_metadataLabel->setString(label.c_str());
-        m_metadataLabel->limitLabelWidth(385.f, 0.43f, 0.2f);
     }
 
     void setStatus(std::string const& message, bool isError = false) {
@@ -589,7 +565,7 @@ public:
         m_exportCode = code;
         // The export input is a compact preview; the full multi-kilobyte code
         // remains stored separately and is copied by the Copy Code button.
-        constexpr size_t previewLength = 130;
+        constexpr size_t previewLength = 90;
         std::string preview = code.substr(0, previewLength);
         if (code.size() > previewLength) preview += "...";
         m_exportInput->setEnabled(true);
@@ -602,9 +578,9 @@ public:
         m_metadataLabel->limitLabelWidth(385.f, 0.43f, 0.2f);
 
         this->setStatus(
-            "SCAN OK | Objects: " + std::to_string(data.objects.size()) +
-            " | Code: " + std::to_string(code.size()) +
-            " chars | Tap Copy Code."
+            "SCAN OK | " + std::to_string(data.objects.size()) +
+            " visual objects | " + std::to_string(code.size()) +
+            " compressed chars. Tap Copy Code."
         );
     }
 
@@ -621,6 +597,41 @@ public:
         this->setStatus("Style code copied to the clipboard.");
     }
 
+    void onPasteFromClipboard(cocos2d::CCObject*) {
+        const std::string code = readFromClipboard();
+        if (code.empty()) {
+            this->setStatus("Clipboard is empty. Copy a StyleScanner code first.", true);
+            return;
+        }
+
+        StyleData data;
+        std::string error;
+        if (!decodeStyle(code, data, error)) {
+            this->setStatus(error, true);
+            return;
+        }
+
+        m_importCode = code;
+        m_importData = std::move(data);
+
+        std::string preview = code.substr(0, 72);
+        if (code.size() > 72) preview += "...";
+        m_importPreview->setString(preview.c_str());
+        m_importPreview->limitLabelWidth(350.f, 0.38f, 0.2f);
+
+        std::string levelName = m_importData.levelName.empty() ? "[Unnamed]" : m_importData.levelName;
+        std::string creatorName = m_importData.creatorName.empty() ? "[Unavailable]" : m_importData.creatorName;
+        const std::string label =
+            "Source: " + levelName + " | Creator: " + creatorName;
+        m_metadataLabel->setString(label.c_str());
+        m_metadataLabel->limitLabelWidth(350.f, 0.38f, 0.2f);
+
+        this->setStatus(
+            "CODE READY | " + std::to_string(m_importData.objects.size()) +
+            " visual objects. Press Apply Style."
+        );
+    }
+
     void onApply(cocos2d::CCObject*) {
         auto* editor = LevelEditorLayer::get();
         if (!editor) {
@@ -628,13 +639,12 @@ public:
             return;
         }
 
-        StyleData data;
-        std::string error;
-        if (!decodeStyle(m_importInput->getString(), data, error)) {
-            this->setStatus(error, true);
+        if (m_importCode.empty()) {
+            this->setStatus("Press Paste Code first to load a style from the clipboard.", true);
             return;
         }
 
+        auto const& data = m_importData;
         size_t keptObjects = 0;
         size_t removedObjects = 0;
 
@@ -664,6 +674,13 @@ public:
             for (unsigned int i = 0; i < createdCount; ++i) {
                 auto* object = static_cast<GameObject*>(created->objectAtIndex(i));
                 if (isStyleObject(object)) {
+                    // Keep copied block/slope shapes as visual-only pieces.
+                    // This prevents copied geometry from introducing collision.
+                    if (object->m_objectType == GameObjectType::Solid ||
+                        object->m_objectType == GameObjectType::Slope ||
+                        object->m_objectType == GameObjectType::Breakable) {
+                        object->m_isNoTouch = true;
+                    }
                     ++keptObjects;
                 } else if (object) {
                     rejectedObjects.push_back(object);
@@ -693,7 +710,7 @@ public:
         if (removedObjects > 0) {
             result += " (" + std::to_string(removedObjects) + " non-style objects rejected)";
         }
-        result += ". Existing layout blocks were not intentionally replaced.";
+        result += ". Original positions, scale, rotation, editor layer and Z ordering are kept.";
         this->setStatus(result);
     }
 
