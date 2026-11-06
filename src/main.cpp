@@ -26,12 +26,16 @@ namespace {
     constexpr std::string_view kPreviousTemplateMagic = "STY3";
     constexpr std::string_view kPreviousCodeMagic = "STY2";
     constexpr std::string_view kLegacyCodeMagic = "STY1";
-    constexpr size_t kMaxCodeBytes = 12 * 1024 * 1024;
-    constexpr size_t kMaxPayloadBytes = 64 * 1024 * 1024;
+    // Larger imports are bounded and parsed in small batches to avoid
+    // building one enormous Geometry Dash object string in memory.
+    constexpr size_t kMaxCodeBytes = 32 * 1024 * 1024;
+    constexpr size_t kMaxPayloadBytes = 128 * 1024 * 1024;
     constexpr size_t kMaxSettingsBytes = 1024 * 1024;
     constexpr size_t kMaxObjectBytes = 64 * 1024;
-    constexpr size_t kMaxObjects = 50000;
+    constexpr size_t kMaxObjects = 250000;
     constexpr size_t kMaxTemplates = 512;
+    constexpr size_t kImportBatchObjects = 2000;
+    constexpr size_t kImportBatchBytes = 2 * 1024 * 1024;
     constexpr size_t kMaxNameBytes = 4096;
 
     struct DecoItem {
@@ -291,7 +295,7 @@ namespace {
         if (data.levelName.size() > kMaxNameBytes ||
             data.creatorName.size() > kMaxNameBytes ||
             data.settings.size() > kMaxSettingsBytes ||
-            data.templates.size() > kMaxObjects) {
+            data.templates.size() > kMaxTemplates) {
             error = "The style archive exceeds its safe export limits.";
             return false;
         }
@@ -459,8 +463,11 @@ namespace {
         }
 
         uint32_t count = 0;
-        if (!readU32(view, cursor, count) || count > kMaxObjects) {
-            error = "The style archive contains too many decoration templates.";
+        const uint32_t maxEntryCount = previousFormat
+            ? static_cast<uint32_t>(kMaxObjects)
+            : static_cast<uint32_t>(kMaxTemplates);
+        if (!readU32(view, cursor, count) || count > maxEntryCount) {
+            error = "The style archive contains too many decoration templates or objects.";
             return false;
         }
 
@@ -1058,8 +1065,12 @@ public:
             }
             totalTargetBlocks = targetBlocks.size();
 
-            std::string serializedPieces;
-            std::vector<Placement> placements;
+            struct PendingPiece {
+                std::string const* record = nullptr;
+                Placement placement;
+            };
+            std::vector<PendingPiece> pendingPieces;
+            pendingPieces.reserve(std::min<size_t>(targetBlocks.size() * 2, kMaxObjects));
             size_t totalBytes = 0;
 
             for (auto const& target : targetBlocks) {
@@ -1107,38 +1118,82 @@ public:
                 );
 
                 for (auto const& item : bestTemplate->items) {
-                    totalBytes += item.record.size() + 1;
-                    if (totalBytes > kMaxPayloadBytes || placements.size() >= kMaxObjects) {
-                        this->setStatus("The matching decoration pieces exceed the safe import limit.", true);
+                    const size_t itemBytes = item.record.size() + 1;
+                    if (pendingPieces.size() >= kMaxObjects ||
+                        itemBytes > kMaxPayloadBytes - totalBytes) {
+                        this->setStatus(
+                            "This style needs more than 250,000 deco pieces or 128 MiB. Split the target level into smaller sections.",
+                            true
+                        );
                         return;
                     }
 
-                    serializedPieces += item.record;
-                    serializedPieces.push_back(';');
-                    placements.push_back({
-                        target.position,
-                        item.offsetX,
-                        item.offsetY,
-                        fitScale
+                    totalBytes += itemBytes;
+                    pendingPieces.push_back({
+                        &item.record,
+                        {
+                            target.position,
+                            item.offsetX,
+                            item.offsetY,
+                            fitScale
+                        }
                     });
                 }
                 ++matchedBlocks;
             }
 
-            if (!serializedPieces.empty()) {
-                auto* created = editor->createObjectsFromString(serializedPieces, false, false);
+            // Parse and insert a limited number of objects per call. This keeps
+            // individual Geometry Dash parser calls bounded on very large levels.
+            for (size_t start = 0; start < pendingPieces.size();) {
+                std::string batchText;
+                std::vector<Placement> batchPlacements;
+                batchText.reserve(std::min(kImportBatchBytes, totalBytes));
+                batchPlacements.reserve(std::min(kImportBatchObjects, pendingPieces.size() - start));
+
+                size_t batchBytes = 0;
+                size_t end = start;
+                while (end < pendingPieces.size() &&
+                       batchPlacements.size() < kImportBatchObjects) {
+                    auto const& pending = pendingPieces[end];
+                    if (!pending.record) {
+                        this->setStatus("A decoration record is missing from the import plan.", true);
+                        return;
+                    }
+                    const size_t itemBytes = pending.record->size() + 1;
+                    if (!batchPlacements.empty() &&
+                        itemBytes > kImportBatchBytes - batchBytes) {
+                        break;
+                    }
+
+                    batchText += *pending.record;
+                    batchText.push_back(';');
+                    batchBytes += itemBytes;
+                    batchPlacements.push_back(pending.placement);
+                    ++end;
+                }
+
+                if (batchPlacements.empty()) {
+                    this->setStatus("Could not prepare a safe decoration import batch.", true);
+                    return;
+                }
+
+                auto* created = editor->createObjectsFromString(batchText, false, false);
                 if (!created) {
-                    this->setStatus("Geometry Dash could not create the matched decoration pieces.", true);
+                    this->setStatus(
+                        "Import stopped after " + std::to_string(addedPieces) +
+                        " deco pieces. Geometry Dash could not create the next batch.",
+                        true
+                    );
                     return;
                 }
 
                 const unsigned int createdCount = created->count();
-                const size_t applyCount = std::min<size_t>(createdCount, placements.size());
+                const size_t applyCount = std::min<size_t>(createdCount, batchPlacements.size());
                 for (size_t i = 0; i < applyCount; ++i) {
                     auto* object = static_cast<GameObject*>(created->objectAtIndex(static_cast<unsigned int>(i)));
                     if (!object) continue;
 
-                    auto const& placement = placements[i];
+                    auto const& placement = batchPlacements[i];
                     object->setPosition({
                         placement.anchorPosition.x + placement.offsetX * placement.scale,
                         placement.anchorPosition.y + placement.offsetY * placement.scale
@@ -1155,6 +1210,18 @@ public:
                     }
                     ++addedPieces;
                 }
+
+                if (createdCount < batchPlacements.size()) {
+                    this->setStatus(
+                        "Import stopped: Geometry Dash created only " +
+                        std::to_string(createdCount) + " of " +
+                        std::to_string(batchPlacements.size()) + " objects in a batch.",
+                        true
+                    );
+                    return;
+                }
+
+                start = end;
             }
         }
 
