@@ -35,10 +35,7 @@ jobs:
         uses: actions/checkout@v4
 
       # Geode SDK 3.5's CMake helper compares the manifest's "geode" value
-      # literally to GEODE_VERSION_FULL instead of accepting a semver range.
-      # Temporarily use the exact build SDK, then restore the declared range
-      # inside the finished .geode archive below. The committed mod.json stays
-      # at the requested >=3.0.0 <4.00.0 compatibility range.
+      # literally to GEODE_VERSION_FULL, so build with the exact SDK version.
       - name: Prepare manifest for Geode 3.5 CMake validation
         shell: bash
         run: |
@@ -49,7 +46,7 @@ jobs:
           path = Path("mod.json")
           manifest = json.loads(path.read_text(encoding="utf-8"))
           manifest["geode"] = "3.5.0"
-          path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+          path.write_text(json.dumps(manifest, indent=2) + "\\n", encoding="utf-8")
           PY
 
       - name: Build Geode package
@@ -61,7 +58,9 @@ jobs:
           path: ./
           configure-args: -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 
-      - name: Restore declared Geode compatibility range in package
+      # Geode 3.x supports one comparator in mod.json. It also rejects
+      # mismatched major versions, so >=3.0.0 allows 3.x and refuses 4.x.
+      - name: Set loader-compatible Geode constraint in package
         shell: bash
         env:
           BUILD_OUTPUT: ${{ steps.geode-build.outputs.build-output }}
@@ -74,7 +73,7 @@ jobs:
           from pathlib import Path
 
           output = Path(os.environ["BUILD_OUTPUT"])
-          packages = list(output.glob("*.geode"))
+          packages = sorted(output.glob("*.geode"))
           if not packages:
               raise SystemExit(f"No .geode package found in {output}")
 
@@ -82,15 +81,22 @@ jobs:
               fd, temporary_name = tempfile.mkstemp(suffix=".geode", dir=output)
               os.close(fd)
               temporary = Path(temporary_name)
+              found_manifest = False
               try:
                   with zipfile.ZipFile(package, "r") as source, zipfile.ZipFile(temporary, "w") as target:
+                      target.comment = source.comment
                       for entry in source.infolist():
                           data = source.read(entry.filename)
                           if entry.filename == "mod.json":
                               manifest = json.loads(data.decode("utf-8"))
-                              manifest["geode"] = ">=3.0.0 <4.00.0"
-                              data = json.dumps(manifest, indent=2).encode("utf-8")
+                              if manifest.get("id") != "developer.stylescanner":
+                                  raise RuntimeError("Unexpected mod ID in package")
+                              manifest["geode"] = ">=3.0.0"
+                              data = (json.dumps(manifest, indent=2) + "\\n").encode("utf-8")
+                              found_manifest = True
                           target.writestr(entry, data)
+                  if not found_manifest:
+                      raise RuntimeError(f"Missing root mod.json in {package.name}")
                   temporary.replace(package)
               except Exception:
                   temporary.unlink(missing_ok=True)
