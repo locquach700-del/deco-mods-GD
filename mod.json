@@ -6,9 +6,9 @@
   },
   "id": "developer.stylescanner",
   "name": "Style Scanner & Deco Copier",
-  "version": "1.0.4",
+  "version": "1.1.0",
   "developer": "locquach700-del",
-  "description": "Safer editor-only visual style scanner with compressed export, expanded visual-object support, Z-layer preservation, and clipboard import.",
+  "description": "Extracts decoration patterns from source blocks and fits matching deco to existing target blocks without copying source map geometry; transfers background and palette settings only.",
   "platforms": [
     "win",
     "android"
