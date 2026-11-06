@@ -195,6 +195,8 @@ namespace {
             case GameObjectType::Solid:
             case GameObjectType::Slope:
             case GameObjectType::Breakable:
+            case GameObjectType::Hazard:
+            case GameObjectType::AnimatedHazard:
                 return true;
             default:
                 return false;
@@ -613,7 +615,7 @@ namespace {
             }
         }
 
-        if (anchors.empty() || decorations.empty()) return true;
+        if (anchors.empty()) return true;
 
         // A 64-unit spatial grid keeps large levels from doing an O(blocks × deco)
         // full scan. The radius expands for unusually large source blocks.
@@ -687,8 +689,6 @@ namespace {
         std::unordered_map<std::string, size_t> templateByShape;
         output.templates.reserve(std::min<size_t>(anchors.size(), kMaxTemplates));
         for (auto& anchor : anchors) {
-            if (anchor.items.empty()) continue;
-
             DecoTemplate styleTemplate;
             styleTemplate.anchorType = static_cast<uint32_t>(anchor.object->m_objectType);
             styleTemplate.anchorObjectID = static_cast<uint32_t>(anchor.object->m_objectID);
@@ -696,9 +696,11 @@ namespace {
             styleTemplate.anchorHeight = anchor.height;
             styleTemplate.items = std::move(anchor.items);
 
+            // Source and target numeric IDs may differ while representing
+            // the same visual family (e.g. alternate large-spike variants).
+            // Group templates by object type and base dimensions instead.
             const std::string key =
                 std::to_string(styleTemplate.anchorType) + ":" +
-                std::to_string(styleTemplate.anchorObjectID) + ":" +
                 std::to_string(static_cast<int>(std::lround(styleTemplate.anchorWidth / 4.f))) + ":" +
                 std::to_string(static_cast<int>(std::lround(styleTemplate.anchorHeight / 4.f)));
 
@@ -739,6 +741,7 @@ namespace {
         }
 
         editor->levelSettingsUpdated();
+        editor->updateLevelColors();
         return true;
     }
 
@@ -942,8 +945,8 @@ public:
         }
         this->setStatus(
             "SCAN OK | " + std::to_string(data.templates.size()) +
-            " block patterns / " + std::to_string(pieceCount) +
-            " deco pieces + background settings. Tap Copy Code."
+            " object styles / " + std::to_string(pieceCount) +
+            " attached deco pieces + background settings. Tap Copy Code."
         );
     }
 
@@ -1002,8 +1005,8 @@ public:
         }
         this->setStatus(
             "STYLE READY | " + std::to_string(m_importData.templates.size()) +
-            " block patterns / " + std::to_string(pieceCount) +
-            " deco pieces + background. Open your target level and Apply."
+            " object styles / " + std::to_string(pieceCount) +
+            " attached deco pieces + background. Open your target level and Apply."
         );
     }
 
@@ -1021,6 +1024,7 @@ public:
 
         auto const& data = m_importData;
         size_t addedPieces = 0;
+        size_t changedSkins = 0;
         size_t matchedBlocks = 0;
         size_t totalTargetBlocks = 0;
         size_t unmatchedBlocks = 0;
@@ -1079,26 +1083,24 @@ public:
                 float bestScore = std::numeric_limits<float>::max();
 
                 for (auto const& candidate : data.templates) {
-                    if (candidate.items.empty()) continue;
-
-                    // A source decoration template is valid only for the exact
-                    // same Geometry Dash object ID and object type. Do not
-                    // silently paste a different block's decoration style.
-                    if (candidate.anchorType != targetType ||
-                        candidate.anchorObjectID != static_cast<uint32_t>(target.object->m_objectID)) {
-                        continue;
-                    }
+                    // Match by object family and size. Numeric IDs are allowed
+                    // to differ so one large spike variant can style another.
+                    if (candidate.anchorType != targetType) continue;
 
                     const float ratioX = target.width / candidate.anchorWidth;
                     const float ratioY = target.height / candidate.anchorHeight;
                     if (!std::isfinite(ratioX) || !std::isfinite(ratioY) ||
                         ratioX <= 0.f || ratioY <= 0.f) continue;
 
+                    // Keep small/large object families separate.
+                    if (ratioX < 0.85f || ratioX > 1.18f ||
+                        ratioY < 0.85f || ratioY > 1.18f) continue;
+
                     float score = std::abs(std::log(ratioX)) +
                                   std::abs(std::log(ratioY));
-                    // Prefer a reusable compact pattern when two templates
-                    // of the same block ID fit the target equally well.
-                    score += static_cast<float>(candidate.items.size()) * 0.0001f;
+                    // Prefer a source object with the richest attached deco
+                    // when multiple samples have nearly identical dimensions.
+                    score -= static_cast<float>(candidate.items.size()) * 0.0001f;
 
                     if (score < bestScore) {
                         bestScore = score;
@@ -1114,8 +1116,27 @@ public:
                 const float ratioX = target.width / bestTemplate->anchorWidth;
                 const float ratioY = target.height / bestTemplate->anchorHeight;
                 const float fitScale = std::clamp(
-                    std::min(ratioX, ratioY), 0.55f, 1.6f
+                    std::min(ratioX, ratioY), 0.85f, 1.18f
                 );
+
+                // Create the source visual variant at the target position,
+                // copy the target's editor/gameplay attributes, then remove
+                // the old visual object only after the replacement exists.
+                const int sourceStyleID = static_cast<int>(bestTemplate->anchorObjectID);
+                if (sourceStyleID > 0 && target.object->m_objectID != sourceStyleID) {
+                    auto* replacement = editor->createObject(sourceStyleID, target.position, false);
+                    if (replacement) {
+                        replacement->duplicateAttributes(target.object);
+                        replacement->setPosition(target.position);
+                        replacement->setRotation(target.object->getRotation());
+                        replacement->setScaleX(target.object->getScaleX());
+                        replacement->setScaleY(target.object->getScaleY());
+                        replacement->setFlipX(target.object->isFlipX());
+                        replacement->setFlipY(target.object->isFlipY());
+                        editor->removeObject(target.object, true);
+                        ++changedSkins;
+                    }
+                }
 
                 for (auto const& item : bestTemplate->items) {
                     const size_t itemBytes = item.record.size() + 1;
@@ -1226,31 +1247,25 @@ public:
         }
 
         const bool settingsApplied = applyVisualSettings(editor, data.settings);
-        if (addedPieces == 0 && !settingsApplied) {
+        if (addedPieces == 0 && changedSkins == 0 && !settingsApplied) {
             this->setStatus(
-                "No matching undecorated blocks were found. Background settings were not changed.",
+                "No matching object family / size or visual settings found. Rescan the sample level with Style Scanner 1.2.0.",
                 true
             );
             return;
         }
 
-        std::string result;
-        if (matchedBlocks == 0) {
-            result =
-                "No exact block-ID matches: " + std::to_string(totalTargetBlocks) +
-                " target blocks checked. Scan a source level using the same block ID.";
-        } else {
-            result =
-                "Added " + std::to_string(addedPieces) + " deco pieces to " +
-                std::to_string(matchedBlocks) + " of " +
-                std::to_string(totalTargetBlocks) + " target blocks.";
-            if (unmatchedBlocks > 0) {
-                result += " " + std::to_string(unmatchedBlocks) +
-                          " blocks had no same-ID source pattern.";
-            }
+        std::string result =
+            "Changed " + std::to_string(changedSkins) + " object skins; added " +
+            std::to_string(addedPieces) + " deco pieces on " +
+            std::to_string(matchedBlocks) + " of " +
+            std::to_string(totalTargetBlocks) + " matching objects.";
+        if (unmatchedBlocks > 0) {
+            result += " " + std::to_string(unmatchedBlocks) +
+                      " objects had no matching source style.";
         }
-        if (settingsApplied) result += " Background / ground / palette copied.";
-        result += " Original map geometry, gameplay and music stay unchanged.";
+        if (settingsApplied) result += " Background, ground and palette copied.";
+        result += " Target object positions and matching object families were retained.";
         this->setStatus(result);
     }
 
