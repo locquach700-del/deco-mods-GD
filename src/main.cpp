@@ -531,7 +531,7 @@ namespace {
 
     bool scanLayer(GJBaseGameLayer* source, StyleData& output, std::string& error) {
         if (!source || !source->m_level) {
-            error = "No active Geometry Dash level was found.";
+            error = "No active Geometry Dash editor level was found.";
             return false;
         }
 
@@ -546,33 +546,108 @@ namespace {
         }
 
         if (output.settings.size() > kMaxSettingsBytes) {
-            error = "The level settings/palette data exceeds the export size limit.";
+            error = "The background / palette settings exceed the export size limit.";
             return false;
         }
-
         if (!source->m_objects) return true;
 
+        struct SourceAnchor {
+            GameObject* object = nullptr;
+            cocos2d::CCPoint position;
+            float width = 30.f;
+            float height = 30.f;
+            std::vector<DecoItem> items;
+        };
+
+        std::vector<SourceAnchor> anchors;
+        std::vector<GameObject*> decorations;
         const unsigned int objectCount = source->m_objects->count();
-        output.objects.reserve(std::min<size_t>(objectCount, kMaxObjects));
-        size_t visualBytes = 0;
+        anchors.reserve(std::min<size_t>(objectCount, 20000));
+        decorations.reserve(std::min<size_t>(objectCount, 20000));
 
         for (unsigned int i = 0; i < objectCount; ++i) {
             auto* object = static_cast<GameObject*>(source->m_objects->objectAtIndex(i));
-            if (!isStyleObject(object)) continue;
+            if (!object) continue;
 
-            const auto saved = object->getSaveString(source);
+            if (isAnchorBlock(object)) {
+                SourceAnchor anchor;
+                anchor.object = object;
+                anchor.position = object->getPosition();
+                anchor.width = safeObjectWidth(object);
+                anchor.height = safeObjectHeight(object);
+                anchors.emplace_back(std::move(anchor));
+            } else if (isDecorationPart(object)) {
+                decorations.push_back(object);
+            }
+        }
+
+        if (anchors.empty() || decorations.empty()) {
+            return true; // Background / palette can still be transferred on its own.
+        }
+
+        size_t totalItems = 0;
+        size_t serializedBytes = 0;
+        for (auto* decoration : decorations) {
+            if (!decoration) continue;
+
+            const auto position = decoration->getPosition();
+            size_t bestIndex = anchors.size();
+            float bestDistance = std::numeric_limits<float>::max();
+
+            for (size_t i = 0; i < anchors.size(); ++i) {
+                auto const& anchor = anchors[i];
+                const float halfW = anchor.width * 0.5f;
+                const float halfH = anchor.height * 0.5f;
+                const float dx = std::max(0.f, std::abs(position.x - anchor.position.x) - halfW);
+                const float dy = std::max(0.f, std::abs(position.y - anchor.position.y) - halfH);
+                const float distance = std::hypot(dx, dy);
+
+                if (distance < bestDistance) {
+                    bestDistance = distance;
+                    bestIndex = i;
+                }
+            }
+
+            if (bestIndex >= anchors.size()) continue;
+            auto const& bestAnchor = anchors[bestIndex];
+            const float attachRange = std::max(
+                88.f,
+                std::max(bestAnchor.width, bestAnchor.height) * 0.9f + 36.f
+            );
+            if (bestDistance > attachRange) continue;
+
+            // Serialize only the decorative piece, not its source block.
+            // getSaveString is called exclusively on objects belonging to the
+            // open LevelEditorLayer, never on live PlayLayer objects.
+            const auto saved = decoration->getSaveString(source);
             std::string record = saved.c_str();
             if (record.empty() || !validObjectRecord(record)) continue;
-
             if (record.size() > kMaxObjectBytes ||
-                output.objects.size() >= kMaxObjects ||
-                visualBytes > kMaxPayloadBytes - record.size() - 4) {
-                error = "The level exceeds the 50,000 visual-object / 64 MiB export limits.";
+                totalItems >= kMaxObjects ||
+                serializedBytes > kMaxPayloadBytes - record.size() - 4) {
+                error = "The level exceeds the 50,000 decoration-piece / 64 MiB export limits.";
                 return false;
             }
 
-            visualBytes += record.size() + 4;
-            output.objects.emplace_back(std::move(record));
+            DecoItem item;
+            item.record = std::move(record);
+            item.offsetX = position.x - bestAnchor.position.x;
+            item.offsetY = position.y - bestAnchor.position.y;
+            anchors[bestIndex].items.emplace_back(std::move(item));
+            serializedBytes += anchors[bestIndex].items.back().record.size() + 12;
+            ++totalItems;
+        }
+
+        output.templates.reserve(std::min<size_t>(anchors.size(), kMaxObjects));
+        for (auto& anchor : anchors) {
+            if (anchor.items.empty()) continue;
+
+            DecoTemplate styleTemplate;
+            styleTemplate.anchorType = static_cast<uint32_t>(anchor.object->m_objectType);
+            styleTemplate.anchorWidth = anchor.width;
+            styleTemplate.anchorHeight = anchor.height;
+            styleTemplate.items = std::move(anchor.items);
+            output.templates.emplace_back(std::move(styleTemplate));
         }
         return true;
     }
