@@ -14,6 +14,7 @@
 #include <limits>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 using namespace geode::prelude;
@@ -29,6 +30,7 @@ namespace {
     constexpr size_t kMaxSettingsBytes = 1024 * 1024;
     constexpr size_t kMaxObjectBytes = 64 * 1024;
     constexpr size_t kMaxObjects = 50000;
+    constexpr size_t kMaxTemplates = 512;
     constexpr size_t kMaxNameBytes = 4096;
 
     struct DecoItem {
@@ -39,6 +41,7 @@ namespace {
 
     struct DecoTemplate {
         uint32_t anchorType = 0;
+        uint32_t anchorObjectID = 0;
         float anchorWidth = 30.f;
         float anchorHeight = 30.f;
         std::vector<DecoItem> items;
@@ -227,6 +230,17 @@ namespace {
         appendU32(output, bits);
     }
 
+    uint64_t spatialKey(int32_t cellX, int32_t cellY) {
+        return (static_cast<uint64_t>(static_cast<uint32_t>(cellX)) << 32) |
+               static_cast<uint32_t>(cellY);
+    }
+
+    uint64_t spatialKey(cocos2d::CCPoint position, float cellSize = 64.f) {
+        const auto cellX = static_cast<int32_t>(std::floor(position.x / cellSize));
+        const auto cellY = static_cast<int32_t>(std::floor(position.y / cellSize));
+        return spatialKey(cellX, cellY);
+    }
+
     bool readFloat(std::string_view input, size_t& cursor, float& value) {
         uint32_t bits = 0;
         if (!readU32(input, cursor, bits)) return false;
@@ -286,6 +300,7 @@ namespace {
             totalItems += styleTemplate.items.size();
             if (totalItems > kMaxObjects ||
                 styleTemplate.items.size() > kMaxObjects ||
+                styleTemplate.anchorObjectID > 100000 ||
                 !std::isfinite(styleTemplate.anchorWidth) ||
                 !std::isfinite(styleTemplate.anchorHeight) ||
                 styleTemplate.anchorWidth <= 0.f ||
@@ -312,6 +327,7 @@ namespace {
         appendU32(payload, static_cast<uint32_t>(data.templates.size()));
         for (auto const& styleTemplate : data.templates) {
             appendU32(payload, styleTemplate.anchorType);
+            appendU32(payload, styleTemplate.anchorObjectID);
             appendFloat(payload, styleTemplate.anchorWidth);
             appendFloat(payload, styleTemplate.anchorHeight);
             appendU32(payload, static_cast<uint32_t>(styleTemplate.items.size()));
@@ -463,6 +479,7 @@ namespace {
                 DecoTemplate styleTemplate;
                 uint32_t itemCount = 0;
                 if (!readU32(view, cursor, styleTemplate.anchorType) ||
+                    !readU32(view, cursor, styleTemplate.anchorObjectID) ||
                     !readFloat(view, cursor, styleTemplate.anchorWidth) ||
                     !readFloat(view, cursor, styleTemplate.anchorHeight) ||
                     !readU32(view, cursor, itemCount) ||
@@ -545,7 +562,6 @@ namespace {
         } else {
             output.settings = source->m_level->generateSettingsString().c_str();
         }
-
         if (output.settings.size() > kMaxSettingsBytes) {
             error = "The background / palette settings exceed the export size limit.";
             return false;
@@ -565,6 +581,8 @@ namespace {
         const unsigned int objectCount = source->m_objects->count();
         anchors.reserve(std::min<size_t>(objectCount, 20000));
         decorations.reserve(std::min<size_t>(objectCount, 20000));
+        std::unordered_map<uint64_t, std::vector<size_t>> anchorGrid;
+        float maxAnchorExtent = 30.f;
 
         for (unsigned int i = 0; i < objectCount; ++i) {
             auto* object = static_cast<GameObject*>(source->m_objects->objectAtIndex(i));
@@ -576,50 +594,64 @@ namespace {
                 anchor.position = object->getPosition();
                 anchor.width = safeObjectWidth(object);
                 anchor.height = safeObjectHeight(object);
+                maxAnchorExtent = std::max(maxAnchorExtent, std::max(anchor.width, anchor.height));
+                const size_t index = anchors.size();
+                anchorGrid[spatialKey(anchor.position)].push_back(index);
                 anchors.emplace_back(std::move(anchor));
             } else if (isDecorationPart(object)) {
                 decorations.push_back(object);
             }
         }
 
-        if (anchors.empty() || decorations.empty()) {
-            return true; // Background / palette can still be transferred on its own.
-        }
+        if (anchors.empty() || decorations.empty()) return true;
+
+        // A 64-unit spatial grid keeps large levels from doing an O(blocks × deco)
+        // full scan. The radius expands for unusually large source blocks.
+        const int cellRadius = std::clamp(
+            static_cast<int>(std::ceil((maxAnchorExtent * 0.5f + 160.f) / 64.f)),
+            1, 8
+        );
 
         size_t totalItems = 0;
         size_t serializedBytes = 0;
         for (auto* decoration : decorations) {
             if (!decoration) continue;
-
             const auto position = decoration->getPosition();
+            const auto cellX = static_cast<int32_t>(std::floor(position.x / 64.f));
+            const auto cellY = static_cast<int32_t>(std::floor(position.y / 64.f));
+
             size_t bestIndex = anchors.size();
             float bestDistance = std::numeric_limits<float>::max();
 
-            for (size_t i = 0; i < anchors.size(); ++i) {
-                auto const& anchor = anchors[i];
-                const float halfW = anchor.width * 0.5f;
-                const float halfH = anchor.height * 0.5f;
-                const float dx = std::max(0.f, std::abs(position.x - anchor.position.x) - halfW);
-                const float dy = std::max(0.f, std::abs(position.y - anchor.position.y) - halfH);
-                const float distance = std::hypot(dx, dy);
+            for (int x = -cellRadius; x <= cellRadius; ++x) {
+                for (int y = -cellRadius; y <= cellRadius; ++y) {
+                    const auto found = anchorGrid.find(spatialKey(cellX + x, cellY + y));
+                    if (found == anchorGrid.end()) continue;
 
-                if (distance < bestDistance) {
-                    bestDistance = distance;
-                    bestIndex = i;
+                    for (const size_t index : found->second) {
+                        auto const& anchor = anchors[index];
+                        const float halfW = anchor.width * 0.5f;
+                        const float halfH = anchor.height * 0.5f;
+                        const float dx = std::max(0.f, std::abs(position.x - anchor.position.x) - halfW);
+                        const float dy = std::max(0.f, std::abs(position.y - anchor.position.y) - halfH);
+                        const float distance = std::hypot(dx, dy);
+                        if (distance < bestDistance) {
+                            bestDistance = distance;
+                            bestIndex = index;
+                        }
+                    }
                 }
             }
 
             if (bestIndex >= anchors.size()) continue;
             auto const& bestAnchor = anchors[bestIndex];
-            const float attachRange = std::max(
-                88.f,
-                std::max(bestAnchor.width, bestAnchor.height) * 0.9f + 36.f
+            const float attachRange = std::clamp(
+                std::max(bestAnchor.width, bestAnchor.height) * 0.9f + 36.f,
+                88.f, 160.f
             );
             if (bestDistance > attachRange) continue;
 
-            // Serialize only the decorative piece, not its source block.
-            // getSaveString is called exclusively on objects belonging to the
-            // open LevelEditorLayer, never on live PlayLayer objects.
+            // Serialize only the decorative piece, never the source block.
             const auto saved = decoration->getSaveString(source);
             std::string record = saved.c_str();
             if (record.empty() || !validObjectRecord(record)) continue;
@@ -639,15 +671,38 @@ namespace {
             ++totalItems;
         }
 
-        output.templates.reserve(std::min<size_t>(anchors.size(), kMaxObjects));
+        // Keep one representative deco pattern for each block ID + shape.
+        // This avoids storing thousands of near-identical templates and makes
+        // target matching fast while retaining the richest nearby pattern.
+        std::unordered_map<std::string, size_t> templateByShape;
+        output.templates.reserve(std::min<size_t>(anchors.size(), kMaxTemplates));
         for (auto& anchor : anchors) {
             if (anchor.items.empty()) continue;
 
             DecoTemplate styleTemplate;
             styleTemplate.anchorType = static_cast<uint32_t>(anchor.object->m_objectType);
+            styleTemplate.anchorObjectID = static_cast<uint32_t>(anchor.object->m_objectID);
             styleTemplate.anchorWidth = anchor.width;
             styleTemplate.anchorHeight = anchor.height;
             styleTemplate.items = std::move(anchor.items);
+
+            const std::string key =
+                std::to_string(styleTemplate.anchorType) + ":" +
+                std::to_string(styleTemplate.anchorObjectID) + ":" +
+                std::to_string(static_cast<int>(std::lround(styleTemplate.anchorWidth / 4.f))) + ":" +
+                std::to_string(static_cast<int>(std::lround(styleTemplate.anchorHeight / 4.f)));
+
+            const auto found = templateByShape.find(key);
+            if (found != templateByShape.end()) {
+                auto& existing = output.templates[found->second];
+                if (styleTemplate.items.size() > existing.items.size()) {
+                    existing = std::move(styleTemplate);
+                }
+                continue;
+            }
+
+            if (output.templates.size() >= kMaxTemplates) continue;
+            templateByShape.emplace(key, output.templates.size());
             output.templates.emplace_back(std::move(styleTemplate));
         }
         return true;
@@ -974,11 +1029,10 @@ public:
             };
 
             std::vector<TargetBlock> targetBlocks;
-            std::vector<GameObject*> existingDecorations;
+            std::unordered_map<uint64_t, std::vector<cocos2d::CCPoint>> decorationGrid;
             if (editor->m_objects) {
                 const unsigned int count = editor->m_objects->count();
                 targetBlocks.reserve(std::min<size_t>(count, 20000));
-                existingDecorations.reserve(std::min<size_t>(count, 20000));
 
                 for (unsigned int i = 0; i < count; ++i) {
                     auto* object = static_cast<GameObject*>(editor->m_objects->objectAtIndex(i));
@@ -992,7 +1046,8 @@ public:
                             safeObjectHeight(object)
                         });
                     } else if (isDecorationPart(object)) {
-                        existingDecorations.push_back(object);
+                        const auto pos = object->getPosition();
+                        decorationGrid[spatialKey(pos)].push_back(pos);
                     }
                 }
             }
@@ -1010,13 +1065,23 @@ public:
                 // Do not stack a second source pattern on top of blocks that
                 // already have decoration pieces around them.
                 bool alreadyDecorated = false;
-                for (auto* decoration : existingDecorations) {
-                    if (!decoration) continue;
-                    const auto pos = decoration->getPosition();
-                    if (std::abs(pos.x - target.position.x) <= target.width * 0.5f + 18.f &&
-                        std::abs(pos.y - target.position.y) <= target.height * 0.5f + 18.f) {
-                        alreadyDecorated = true;
-                        break;
+                const auto blockCellX = static_cast<int32_t>(std::floor(target.position.x / 64.f));
+                const auto blockCellY = static_cast<int32_t>(std::floor(target.position.y / 64.f));
+                const int blockRadius = std::clamp(
+                    static_cast<int>(std::ceil((std::max(target.width, target.height) * 0.5f + 18.f) / 64.f)),
+                    1, 8
+                );
+                for (int x = -blockRadius; x <= blockRadius && !alreadyDecorated; ++x) {
+                    for (int y = -blockRadius; y <= blockRadius && !alreadyDecorated; ++y) {
+                        const auto found = decorationGrid.find(spatialKey(blockCellX + x, blockCellY + y));
+                        if (found == decorationGrid.end()) continue;
+                        for (auto const& pos : found->second) {
+                            if (std::abs(pos.x - target.position.x) <= target.width * 0.5f + 18.f &&
+                                std::abs(pos.y - target.position.y) <= target.height * 0.5f + 18.f) {
+                                alreadyDecorated = true;
+                                break;
+                            }
+                        }
                     }
                 }
                 if (alreadyDecorated) {
@@ -1038,6 +1103,9 @@ public:
                     float score = std::abs(std::log(ratioX)) +
                                   std::abs(std::log(ratioY));
                     if (candidate.anchorType != targetType) score += 0.9f;
+                    if (candidate.anchorObjectID != static_cast<uint32_t>(target.object->m_objectID)) {
+                        score += 0.65f;
+                    }
                     // Prefer a reusable compact pattern when two patterns fit
                     // the target block equally well.
                     score += static_cast<float>(candidate.items.size()) * 0.0001f;
