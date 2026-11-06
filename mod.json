@@ -6,7 +6,7 @@
   },
   "id": "developer.stylescanner",
   "name": "Style Scanner & Deco Copier",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "developer": "locquach700-del",
   "description": "Scan, export, and add Geometry Dash decoration styles and visual palettes.",
   "platforms": [
