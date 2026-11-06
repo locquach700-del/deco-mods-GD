@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -870,10 +871,14 @@ public:
         m_metadataLabel->setString(label.c_str());
         m_metadataLabel->limitLabelWidth(385.f, 0.43f, 0.2f);
 
+        size_t pieceCount = 0;
+        for (auto const& styleTemplate : data.templates) {
+            pieceCount += styleTemplate.items.size();
+        }
         this->setStatus(
-            "SCAN OK | " + std::to_string(data.objects.size()) +
-            " visual objects | " + std::to_string(code.size()) +
-            " compressed chars. Tap Copy Code."
+            "SCAN OK | " + std::to_string(data.templates.size()) +
+            " block patterns / " + std::to_string(pieceCount) +
+            " deco pieces + background settings. Tap Copy Code."
         );
     }
 
@@ -903,6 +908,13 @@ public:
             this->setStatus(error, true);
             return;
         }
+        if (!data.objects.empty()) {
+            this->setStatus(
+                "This is an old whole-object code. Rescan the source level with Style Scanner 1.1.0 so only deco patterns are exported.",
+                true
+            );
+            return;
+        }
 
         m_importCode = code;
         m_importData = std::move(data);
@@ -919,16 +931,21 @@ public:
         m_metadataLabel->setString(label.c_str());
         m_metadataLabel->limitLabelWidth(350.f, 0.38f, 0.2f);
 
+        size_t pieceCount = 0;
+        for (auto const& styleTemplate : m_importData.templates) {
+            pieceCount += styleTemplate.items.size();
+        }
         this->setStatus(
-            "CODE READY | " + std::to_string(m_importData.objects.size()) +
-            " visual objects. Press Apply Style."
+            "STYLE READY | " + std::to_string(m_importData.templates.size()) +
+            " block patterns / " + std::to_string(pieceCount) +
+            " deco pieces + background. Open your target level and Apply."
         );
     }
 
     void onApply(cocos2d::CCObject*) {
         auto* editor = LevelEditorLayer::get();
         if (!editor) {
-            this->setStatus("Open a level in the editor before applying a style.", true);
+            this->setStatus("Open your target level in the editor before applying a style.", true);
             return;
         }
 
@@ -938,72 +955,177 @@ public:
         }
 
         auto const& data = m_importData;
-        size_t keptObjects = 0;
-        size_t removedObjects = 0;
+        size_t addedPieces = 0;
+        size_t matchedBlocks = 0;
+        size_t skippedDecoratedBlocks = 0;
 
-        if (!data.objects.empty()) {
-            std::string serializedObjects;
-            size_t totalBytes = 0;
-            for (auto const& record : data.objects) {
-                totalBytes += record.size() + 1;
-                if (totalBytes > kMaxPayloadBytes) {
-                    this->setStatus("Visual data exceeds the safe import limit.", true);
-                    return;
+        if (!data.templates.empty()) {
+            struct TargetBlock {
+                GameObject* object = nullptr;
+                cocos2d::CCPoint position;
+                float width = 30.f;
+                float height = 30.f;
+            };
+            struct Placement {
+                cocos2d::CCPoint anchorPosition;
+                float offsetX = 0.f;
+                float offsetY = 0.f;
+                float scale = 1.f;
+            };
+
+            std::vector<TargetBlock> targetBlocks;
+            std::vector<GameObject*> existingDecorations;
+            if (editor->m_objects) {
+                const unsigned int count = editor->m_objects->count();
+                targetBlocks.reserve(std::min<size_t>(count, 20000));
+                existingDecorations.reserve(std::min<size_t>(count, 20000));
+
+                for (unsigned int i = 0; i < count; ++i) {
+                    auto* object = static_cast<GameObject*>(editor->m_objects->objectAtIndex(i));
+                    if (!object) continue;
+
+                    if (isAnchorBlock(object)) {
+                        targetBlocks.push_back({
+                            object,
+                            object->getPosition(),
+                            safeObjectWidth(object),
+                            safeObjectHeight(object)
+                        });
+                    } else if (isDecorationPart(object)) {
+                        existingDecorations.push_back(object);
+                    }
                 }
-                serializedObjects += record;
-                serializedObjects.push_back(';');
             }
 
-            auto* created = editor->createObjectsFromString(serializedObjects, false, false);
-            if (!created) {
-                this->setStatus("Geometry Dash could not create the decoration objects.", true);
+            if (targetBlocks.empty()) {
+                this->setStatus("No regular blocks were found in your target level to attach the deco to.", true);
                 return;
             }
 
-            // Keep only visual decorations and color triggers. Collect invalid
-            // objects first because removeObject mutates the editor's object array.
-            std::vector<GameObject*> rejectedObjects;
-            const unsigned int createdCount = created->count();
-            for (unsigned int i = 0; i < createdCount; ++i) {
-                auto* object = static_cast<GameObject*>(created->objectAtIndex(i));
-                if (isStyleObject(object)) {
-                    // Keep copied block/slope shapes as visual-only pieces.
-                    // This prevents copied geometry from introducing collision.
+            std::string serializedPieces;
+            std::vector<Placement> placements;
+            size_t totalBytes = 0;
+
+            for (auto const& target : targetBlocks) {
+                // Do not stack a second source pattern on top of blocks that
+                // already have decoration pieces around them.
+                bool alreadyDecorated = false;
+                for (auto* decoration : existingDecorations) {
+                    if (!decoration) continue;
+                    const auto pos = decoration->getPosition();
+                    if (std::abs(pos.x - target.position.x) <= target.width * 0.5f + 18.f &&
+                        std::abs(pos.y - target.position.y) <= target.height * 0.5f + 18.f) {
+                        alreadyDecorated = true;
+                        break;
+                    }
+                }
+                if (alreadyDecorated) {
+                    ++skippedDecoratedBlocks;
+                    continue;
+                }
+
+                const uint32_t targetType = static_cast<uint32_t>(target.object->m_objectType);
+                const DecoTemplate* bestTemplate = nullptr;
+                float bestScore = std::numeric_limits<float>::max();
+
+                for (auto const& candidate : data.templates) {
+                    if (candidate.items.empty()) continue;
+                    const float ratioX = target.width / candidate.anchorWidth;
+                    const float ratioY = target.height / candidate.anchorHeight;
+                    if (!std::isfinite(ratioX) || !std::isfinite(ratioY) ||
+                        ratioX <= 0.f || ratioY <= 0.f) continue;
+
+                    float score = std::abs(std::log(ratioX)) +
+                                  std::abs(std::log(ratioY));
+                    if (candidate.anchorType != targetType) score += 0.9f;
+                    // Prefer a reusable compact pattern when two patterns fit
+                    // the target block equally well.
+                    score += static_cast<float>(candidate.items.size()) * 0.0001f;
+
+                    if (score < bestScore) {
+                        bestScore = score;
+                        bestTemplate = &candidate;
+                    }
+                }
+
+                if (!bestTemplate) continue;
+
+                const float ratioX = target.width / bestTemplate->anchorWidth;
+                const float ratioY = target.height / bestTemplate->anchorHeight;
+                const float fitScale = std::clamp(
+                    std::min(ratioX, ratioY), 0.55f, 1.6f
+                );
+
+                for (auto const& item : bestTemplate->items) {
+                    totalBytes += item.record.size() + 1;
+                    if (totalBytes > kMaxPayloadBytes || placements.size() >= kMaxObjects) {
+                        this->setStatus("The matching decoration pieces exceed the safe import limit.", true);
+                        return;
+                    }
+
+                    serializedPieces += item.record;
+                    serializedPieces.push_back(';');
+                    placements.push_back({
+                        target.position,
+                        item.offsetX,
+                        item.offsetY,
+                        fitScale
+                    });
+                }
+                ++matchedBlocks;
+            }
+
+            if (!serializedPieces.empty()) {
+                auto* created = editor->createObjectsFromString(serializedPieces, false, false);
+                if (!created) {
+                    this->setStatus("Geometry Dash could not create the matched decoration pieces.", true);
+                    return;
+                }
+
+                const unsigned int createdCount = created->count();
+                const size_t applyCount = std::min<size_t>(createdCount, placements.size());
+                for (size_t i = 0; i < applyCount; ++i) {
+                    auto* object = static_cast<GameObject*>(created->objectAtIndex(static_cast<unsigned int>(i)));
+                    if (!object) continue;
+
+                    auto const& placement = placements[i];
+                    object->setPosition({
+                        placement.anchorPosition.x + placement.offsetX * placement.scale,
+                        placement.anchorPosition.y + placement.offsetY * placement.scale
+                    });
+                    object->setScaleX(object->getScaleX() * placement.scale);
+                    object->setScaleY(object->getScaleY() * placement.scale);
+
+                    // Some decorative pieces use solid/slope sprites. Keep
+                    // those visual-only so no collision gameplay is imported.
                     if (object->m_objectType == GameObjectType::Solid ||
                         object->m_objectType == GameObjectType::Slope ||
                         object->m_objectType == GameObjectType::Breakable) {
                         object->m_isNoTouch = true;
                     }
-                    ++keptObjects;
-                } else if (object) {
-                    rejectedObjects.push_back(object);
+                    ++addedPieces;
                 }
-            }
-
-            for (auto* object : rejectedObjects) {
-                editor->removeObject(object, true);
-                ++removedObjects;
-            }
-
-            if (keptObjects == 0) {
-                this->setStatus("No supported decoration objects were created.", true);
-                return;
             }
         }
 
         const bool settingsApplied = applyVisualSettings(editor, data.settings);
-        if (data.objects.empty() && !settingsApplied) {
-            this->setStatus("No visual settings or decoration objects could be applied.", true);
+        if (addedPieces == 0 && !settingsApplied) {
+            this->setStatus(
+                "No matching undecorated blocks were found. Background settings were not changed.",
+                true
+            );
             return;
         }
 
         std::string result =
-            "Added " + std::to_string(keptObjects) + " visual objects";
-        if (settingsApplied) result += " and applied background / palette settings";
-        if (removedObjects > 0) {
-            result += " (" + std::to_string(removedObjects) + " non-style objects rejected)";
+            "Added " + std::to_string(addedPieces) + " deco pieces to " +
+            std::to_string(matchedBlocks) + " matching blocks";
+        if (skippedDecoratedBlocks > 0) {
+            result += " | skipped " + std::to_string(skippedDecoratedBlocks) +
+                      " blocks that already had deco";
         }
-        result += ". Original positions, scale, rotation, editor layer and Z ordering are kept.";
+        if (settingsApplied) result += " | background / ground / palette copied";
+        result += ". Your original map geometry, gameplay and music stay unchanged.";
         this->setStatus(result);
     }
 
