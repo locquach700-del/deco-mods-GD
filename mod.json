@@ -6,9 +6,9 @@
   },
   "id": "developer.stylescanner",
   "name": "Style Scanner & Deco Copier",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "developer": "locquach700-del",
-  "description": "Extracts decoration patterns from source blocks and fits matching deco to existing target blocks without copying source map geometry; transfers background and palette settings only.",
+  "description": "Scans block decoration templates, matches them to compatible undecorated target blocks, and copies visual background/palette settings without copying source map geometry.",
   "platforms": [
     "win",
     "android"
