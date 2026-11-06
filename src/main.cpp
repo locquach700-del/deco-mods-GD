@@ -2,7 +2,7 @@
 #include <Geode/ui/Popup.hpp>
 #include <Geode/binding/CCMenuItemSpriteExtra.hpp>
 #include <Geode/ui/TextInput.hpp>
-#include <Geode/cocos/robtop/keyboard_dispatcher/CCKeyboardDispatcher.h>
+#include <Geode/utils/Keyboard.hpp>
 
 #include <algorithm>
 #include <cctype>
@@ -680,26 +680,19 @@ namespace {
         }
     }
 
-    class StyleScannerKeyboardListener final : public cocos2d::CCKeyboardDelegate {
-        bool m_f3IsDown = false;
+    geode::ListenerHandle g_keyboardListener;
 
-    public:
-        void keyDown(cocos2d::enumKeyCodes key, double) override {
-            if (key != cocos2d::KEY_F3 || m_f3IsDown) return;
-            m_f3IsDown = true;
-            toggleStyleScanner();
-        }
-
-        void keyUp(cocos2d::enumKeyCodes key, double) override {
-            if (key == cocos2d::KEY_F3) m_f3IsDown = false;
-        }
-    };
-
-    StyleScannerKeyboardListener g_keyboardListener;
 }
 
 $on_game(Loaded) {
-    if (auto* dispatcher = cocos2d::CCKeyboardDispatcher::get()) {
-        dispatcher->addDelegate(&g_keyboardListener);
-    }
+    g_keyboardListener = geode::KeyboardInputEvent(cocos2d::KEY_F3).listen(
+        [](geode::KeyboardInputData& data) {
+            // Handle only the initial press. Repeated key-down events must not
+            // toggle the popup more than once while F3 is held.
+            if (data.action == geode::KeyboardInputData::Action::Press) {
+                toggleStyleScanner();
+            }
+            return false; // Let Geometry Dash and other mods receive the key.
+        }
+    );
 }
