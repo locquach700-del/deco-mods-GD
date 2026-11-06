@@ -413,6 +413,7 @@ class StyleScannerPopup final : public geode::Popup {
 protected:
     geode::TextInput* m_exportInput = nullptr;
     geode::TextInput* m_importInput = nullptr;
+    std::string m_exportCode;
     cocos2d::CCLabelBMFont* m_metadataLabel = nullptr;
     cocos2d::CCLabelBMFont* m_statusLabel = nullptr;
 
@@ -421,84 +422,106 @@ protected:
     }
 
     bool init() override {
-        if (!geode::Popup::init(420.f, 360.f)) return false;
-        this->setTitle("Style Scanner & Deco Copier", "goldFont.fnt", 0.58f, 20.f);
+        constexpr float popupWidth = 440.f;
+        constexpr float popupHeight = 420.f;
+
+        if (!geode::Popup::init(popupWidth, popupHeight)) return false;
+
+        auto const winSize = CCDirector::get()->getWinSize();
+        m_mainLayer->setPosition(winSize / 2.f);
+
+        // Keep the panel centered and slightly smaller. On smaller game windows,
+        // scale it down enough to keep every control inside the visible area.
+        const float fitScale = std::min(
+            winSize.width / (popupWidth + 36.f),
+            winSize.height / (popupHeight + 36.f)
+        );
+        const float uiScale = std::clamp(fitScale, 0.62f, 0.90f);
+        m_mainLayer->setScale(uiScale);
+
+        this->setTitle("Style Scanner & Deco Copier", "goldFont.fnt", 0.52f, 22.f);
+
+        // Geode's default close button is in the top-left and relatively large.
+        // Move it to the top-right and reduce its size.
+        if (m_closeBtn) {
+            m_closeBtn->setPosition({popupWidth - 19.f, popupHeight - 19.f});
+            m_closeBtn->setScale(0.52f);
+        }
 
         auto* exportTitle = cocos2d::CCLabelBMFont::create(
-            "SCAN / EXPORT STYLE", "goldFont.fnt"
+            "1. SCAN / EXPORT STYLE", "goldFont.fnt"
         );
-        exportTitle->setScale(0.48f);
-        exportTitle->setPosition({0.f, 145.f});
-        m_mainLayer->addChild(exportTitle);
+        if (!exportTitle) return false;
+        exportTitle->setScale(0.46f);
+        m_mainLayer->addChildAtPosition(exportTitle, geode::Anchor::Center, {0.f, 157.f});
 
-        m_exportInput = geode::TextInput::create(365.f, "Exported style code", "bigFont.fnt");
+        m_exportInput = geode::TextInput::create(380.f, "Code appears here after scanning", "bigFont.fnt");
         if (!m_exportInput) return false;
         m_exportInput->setCommonFilter(geode::CommonFilter::Any);
-        m_exportInput->setMaxCharCount(kMaxCodeBytes);
+        m_exportInput->setMaxCharCount(180);
         m_exportInput->setTextAlign(geode::TextInputAlign::Left);
-        m_exportInput->setPosition({0.f, 111.f});
-        m_exportInput->setScale(0.78f);
-        m_mainLayer->addChild(m_exportInput);
+        m_mainLayer->addChildAtPosition(m_exportInput, geode::Anchor::Center, {0.f, 119.f});
+        m_exportInput->setEnabled(false);
 
         auto* scanButton = CCMenuItemSpriteExtra::create(
-            ButtonSprite::create("Scan Current Level", "goldFont.fnt", "GJ_button_01.png", 0.68f),
+            ButtonSprite::create("Scan Level", "goldFont.fnt", "GJ_button_01.png", 0.72f),
             this,
             menu_selector(StyleScannerPopup::onScan)
         );
-        scanButton->setPosition({-86.f, 71.f});
+        if (!scanButton) return false;
+        scanButton->setPosition({-94.f, 72.f});
         m_buttonMenu->addChild(scanButton);
 
         auto* copyButton = CCMenuItemSpriteExtra::create(
-            ButtonSprite::create("Copy Code", "goldFont.fnt", "GJ_button_02.png", 0.68f),
+            ButtonSprite::create("Copy Code", "goldFont.fnt", "GJ_button_02.png", 0.72f),
             this,
             menu_selector(StyleScannerPopup::onCopy)
         );
-        copyButton->setPosition({86.f, 71.f});
+        if (!copyButton) return false;
+        copyButton->setPosition({94.f, 72.f});
         m_buttonMenu->addChild(copyButton);
 
         m_metadataLabel = cocos2d::CCLabelBMFont::create(
-            "Source Style Name: [None]  |  Original Creator: [None]",
-            "chatFont.fnt"
+            "Source: [None]  |  Creator: [None]", "chatFont.fnt"
         );
-        m_metadataLabel->setScale(0.43f);
-        m_metadataLabel->setPosition({0.f, 26.f});
-        m_metadataLabel->limitLabelWidth(385.f, 0.43f, 0.2f);
-        m_mainLayer->addChild(m_metadataLabel);
+        if (!m_metadataLabel) return false;
+        m_metadataLabel->setScale(0.42f);
+        m_metadataLabel->limitLabelWidth(390.f, 0.42f, 0.2f);
+        m_mainLayer->addChildAtPosition(m_metadataLabel, geode::Anchor::Center, {0.f, 31.f});
 
         auto* importTitle = cocos2d::CCLabelBMFont::create(
-            "PASTE / APPLY STYLE CODE", "goldFont.fnt"
+            "2. PASTE / APPLY STYLE CODE", "goldFont.fnt"
         );
-        importTitle->setScale(0.48f);
-        importTitle->setPosition({0.f, -22.f});
-        m_mainLayer->addChild(importTitle);
+        if (!importTitle) return false;
+        importTitle->setScale(0.46f);
+        m_mainLayer->addChildAtPosition(importTitle, geode::Anchor::Center, {0.f, -20.f});
 
-        m_importInput = geode::TextInput::create(365.f, "Paste a StyleScanner code", "bigFont.fnt");
+        m_importInput = geode::TextInput::create(380.f, "Paste your STY1 code here (Ctrl+V)", "bigFont.fnt");
         if (!m_importInput) return false;
         m_importInput->setCommonFilter(geode::CommonFilter::Any);
         m_importInput->setMaxCharCount(kMaxCodeBytes);
         m_importInput->setTextAlign(geode::TextInputAlign::Left);
-        m_importInput->setPosition({0.f, -58.f});
-        m_importInput->setScale(0.78f);
         m_importInput->setCallback([this](std::string const& value) {
             this->updateMetadata(value);
         });
-        m_mainLayer->addChild(m_importInput);
+        m_mainLayer->addChildAtPosition(m_importInput, geode::Anchor::Center, {0.f, -59.f});
 
         auto* applyButton = CCMenuItemSpriteExtra::create(
-            ButtonSprite::create("Apply Style to Editor Level", "goldFont.fnt", "GJ_button_03.png", 0.62f),
+            ButtonSprite::create("Apply Style to Editor Level", "goldFont.fnt", "GJ_button_03.png", 0.48f),
             this,
             menu_selector(StyleScannerPopup::onApply)
         );
-        applyButton->setPosition({0.f, -105.f});
+        if (!applyButton) return false;
+        applyButton->setPosition({0.f, -112.f});
         m_buttonMenu->addChild(applyButton);
 
         m_statusLabel = cocos2d::CCLabelBMFont::create(
-            "F3: close StyleScanner", "chatFont.fnt"
+            "Open a level, then press Scan Level.", "chatFont.fnt"
         );
-        m_statusLabel->setScale(0.43f);
-        m_statusLabel->setPosition({0.f, -151.f});
-        m_statusLabel->limitLabelWidth(385.f, 0.43f, 0.2f);
-        m_mainLayer->addChild(m_statusLabel);
+        if (!m_statusLabel) return false;
+        m_statusLabel->setScale(0.42f);
+        m_statusLabel->limitLabelWidth(390.f, 0.42f, 0.2f);
+        m_mainLayer->addChildAtPosition(m_statusLabel, geode::Anchor::Center, {0.f, -171.f});
 
         return true;
     }
@@ -561,7 +584,15 @@ public:
             return;
         }
 
-        m_exportInput->setString(code);
+        m_exportCode = code;
+        // The export input is a compact preview; the full multi-kilobyte code
+        // remains stored separately and is copied by the Copy Code button.
+        constexpr size_t previewLength = 130;
+        std::string preview = code.substr(0, previewLength);
+        if (code.size() > previewLength) preview += "...";
+        m_exportInput->setEnabled(true);
+        m_exportInput->setString(preview);
+        m_exportInput->setEnabled(false);
         const std::string label =
             "Source Style Name: " + (data.levelName.empty() ? "[Unnamed]" : data.levelName) +
             "  |  Original Creator: " +
@@ -569,14 +600,20 @@ public:
         m_metadataLabel->setString(label.c_str());
         m_metadataLabel->limitLabelWidth(385.f, 0.43f, 0.2f);
 
-        this->setStatus(
-            "Scanned " + std::to_string(data.objects.size()) +
-            " decoration / color-trigger objects. Code is ready to copy."
-        );
+        if (data.objects.empty()) {
+            this->setStatus(
+                "Scan complete: no decoration objects found. Level color / background data was exported. Tap Copy Code."
+            );
+        } else {
+            this->setStatus(
+                "Scan complete: " + std::to_string(data.objects.size()) +
+                " decoration / color-trigger objects. Tap Copy Code."
+            );
+        }
     }
 
     void onCopy(cocos2d::CCObject*) {
-        const std::string code = m_exportInput ? m_exportInput->getString() : "";
+        const std::string code = m_exportCode;
         if (code.empty()) {
             this->setStatus("Scan a level before copying its code.", true);
             return;
