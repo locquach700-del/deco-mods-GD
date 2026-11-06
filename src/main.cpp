@@ -527,8 +527,9 @@ protected:
     void setStatus(std::string const& message, bool isError = false) {
         if (!m_statusLabel) return;
         m_statusLabel->setString(message.c_str());
+        m_statusLabel->setScale(0.38f);
         m_statusLabel->setColor(isError ? cocos2d::ccc3(255, 105, 105) : cocos2d::ccc3(150, 255, 150));
-        m_statusLabel->limitLabelWidth(385.f, 0.43f, 0.2f);
+        m_statusLabel->limitLabelWidth(350.f, 0.38f, 0.2f);
     }
 
 public:
@@ -653,8 +654,8 @@ public:
             size_t totalBytes = 0;
             for (auto const& record : data.objects) {
                 totalBytes += record.size() + 1;
-                if (totalBytes > kMaxCodeBytes) {
-                    this->setStatus("Decoration data exceeds the safe import limit.", true);
+                if (totalBytes > kMaxPayloadBytes) {
+                    this->setStatus("Visual data exceeds the safe import limit.", true);
                     return;
                 }
                 serializedObjects += record;
@@ -705,7 +706,7 @@ public:
         }
 
         std::string result =
-            "Added " + std::to_string(keptObjects) + " decoration / color-trigger objects";
+            "Added " + std::to_string(keptObjects) + " visual objects";
         if (settingsApplied) result += " and applied background / palette settings";
         if (removedObjects > 0) {
             result += " (" + std::to_string(removedObjects) + " non-style objects rejected)";
