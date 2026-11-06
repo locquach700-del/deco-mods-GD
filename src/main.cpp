@@ -469,7 +469,7 @@ protected:
             menu_selector(StyleScannerPopup::onScan)
         );
         if (!scanButton) return false;
-        scanButton->setPosition({220.f - 94.f, 210.f + 72.f});
+        scanButton->setPosition({popupWidth / 2.f - 94.f, popupHeight / 2.f + 72.f});
         m_buttonMenu->addChild(scanButton);
 
         auto* copyButton = CCMenuItemSpriteExtra::create(
@@ -478,7 +478,7 @@ protected:
             menu_selector(StyleScannerPopup::onCopy)
         );
         if (!copyButton) return false;
-        copyButton->setPosition({220.f + 94.f, 210.f + 72.f});
+        copyButton->setPosition({popupWidth / 2.f + 94.f, popupHeight / 2.f + 72.f});
         m_buttonMenu->addChild(copyButton);
 
         m_metadataLabel = cocos2d::CCLabelBMFont::create(
@@ -512,7 +512,7 @@ protected:
             menu_selector(StyleScannerPopup::onApply)
         );
         if (!applyButton) return false;
-        applyButton->setPosition({220.f, 210.f - 112.f});
+        applyButton->setPosition({popupWidth / 2.f, popupHeight / 2.f - 112.f});
         m_buttonMenu->addChild(applyButton);
 
         m_statusLabel = cocos2d::CCLabelBMFont::create(
@@ -590,9 +590,7 @@ public:
         constexpr size_t previewLength = 130;
         std::string preview = code.substr(0, previewLength);
         if (code.size() > previewLength) preview += "...";
-        m_exportInput->setEnabled(true);
         m_exportInput->setString(preview);
-        m_exportInput->setEnabled(false);
         const std::string label =
             "Source Style Name: " + (data.levelName.empty() ? "[Unnamed]" : data.levelName) +
             "  |  Original Creator: " +
@@ -661,17 +659,22 @@ public:
                 return;
             }
 
-            // Keep only visual decorations and color triggers. This protects the
-            // target level's structural blocks even if a pasted code is modified.
+            // Keep only visual decorations and color triggers. Collect invalid
+            // objects first because removeObject mutates the editor's object array.
+            std::vector<GameObject*> rejectedObjects;
             const unsigned int createdCount = created->count();
             for (unsigned int i = 0; i < createdCount; ++i) {
                 auto* object = static_cast<GameObject*>(created->objectAtIndex(i));
                 if (isStyleObject(object)) {
                     ++keptObjects;
                 } else if (object) {
-                    editor->removeObject(object, true);
-                    ++removedObjects;
+                    rejectedObjects.push_back(object);
                 }
+            }
+
+            for (auto* object : rejectedObjects) {
+                editor->removeObject(object, true);
+                ++removedObjects;
             }
 
             if (keptObjects == 0) {
