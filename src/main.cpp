@@ -469,7 +469,7 @@ protected:
             menu_selector(StyleScannerPopup::onScan)
         );
         if (!scanButton) return false;
-        scanButton->setPosition({-94.f, 72.f});
+        scanButton->setPosition({220.f - 94.f, 210.f + 72.f});
         m_buttonMenu->addChild(scanButton);
 
         auto* copyButton = CCMenuItemSpriteExtra::create(
@@ -478,7 +478,7 @@ protected:
             menu_selector(StyleScannerPopup::onCopy)
         );
         if (!copyButton) return false;
-        copyButton->setPosition({94.f, 72.f});
+        copyButton->setPosition({220.f + 94.f, 210.f + 72.f});
         m_buttonMenu->addChild(copyButton);
 
         m_metadataLabel = cocos2d::CCLabelBMFont::create(
@@ -512,7 +512,7 @@ protected:
             menu_selector(StyleScannerPopup::onApply)
         );
         if (!applyButton) return false;
-        applyButton->setPosition({0.f, -112.f});
+        applyButton->setPosition({220.f, 210.f - 112.f});
         m_buttonMenu->addChild(applyButton);
 
         m_statusLabel = cocos2d::CCLabelBMFont::create(
