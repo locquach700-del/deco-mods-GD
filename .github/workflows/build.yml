@@ -62,7 +62,7 @@ jobs:
           android-ndk-version: 29.0.14206865
           configure-args: -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_CXX_FLAGS=-DFMT_CONSTEVAL= -DGEODE_GD_VERSION=2.2081 -DGEODE_COMP_GD_VERSION=22081
 
-      - name: Restore Geode 5.x compatibility constraint in package
+      - name: Set exact Geode target version in package
         shell: bash
         env:
           BUILD_OUTPUT: ${{ steps.geode-build.outputs.build-output }}
@@ -93,7 +93,7 @@ jobs:
                               manifest = json.loads(data.decode("utf-8"))
                               if manifest.get("id") != "developer.stylescanner":
                                   raise RuntimeError("Unexpected mod ID in package")
-                              manifest["geode"] = ">=5.0.0"
+                              manifest["geode"] = "5.11.2"
                               data = json.dumps(manifest, indent=2).encode("utf-8")
                               found_manifest = True
                           target.writestr(entry, data)
