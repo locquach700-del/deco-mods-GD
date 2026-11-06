@@ -389,6 +389,78 @@ namespace {
         return true;
     }
 
+    bool scanLayer(GJBaseGameLayer* source, StyleData& output, std::string& error) {
+        if (!source || !source->m_level) {
+            error = "No active Geometry Dash level was found.";
+            return false;
+        }
+
+        output = {};
+        output.levelName = source->m_level->m_levelName.c_str();
+        output.creatorName = source->m_level->m_creatorName.c_str();
+
+        if (source->m_levelSettings) {
+            output.settings = source->m_levelSettings->getSaveString().c_str();
+        } else {
+            output.settings = source->m_level->generateSettingsString().c_str();
+        }
+
+        if (output.settings.size() > kMaxSettingsBytes) {
+            error = "The level settings/palette data exceeds the export size limit.";
+            return false;
+        }
+
+        if (!source->m_objects) return true;
+
+        const unsigned int objectCount = source->m_objects->count();
+        output.objects.reserve(std::min<size_t>(objectCount, kMaxObjects));
+        size_t visualBytes = 0;
+
+        for (unsigned int i = 0; i < objectCount; ++i) {
+            auto* object = static_cast<GameObject*>(source->m_objects->objectAtIndex(i));
+            if (!isStyleObject(object)) continue;
+
+            const auto saved = object->getSaveString(source);
+            std::string record = saved.c_str();
+            if (record.empty() || !validObjectRecord(record)) continue;
+
+            if (record.size() > kMaxObjectBytes ||
+                output.objects.size() >= kMaxObjects ||
+                visualBytes > kMaxPayloadBytes - record.size() - 4) {
+                error = "The level exceeds the 50,000 visual-object / 64 MiB export limits.";
+                return false;
+            }
+
+            visualBytes += record.size() + 4;
+            output.objects.emplace_back(std::move(record));
+        }
+        return true;
+    }
+
+    bool applyVisualSettings(LevelEditorLayer* editor, std::string const& settingsString) {
+        if (!editor || !editor->m_levelSettings || settingsString.empty()) return false;
+
+        auto* imported = LevelSettingsObject::objectFromString(settingsString);
+        if (!imported) return false;
+
+        auto* current = editor->m_levelSettings;
+
+        // Copy visual settings only. Gameplay start mode, speed, dual, and platformer mode are untouched.
+        current->m_backgroundIndex = imported->m_backgroundIndex;
+        current->m_groundIndex = imported->m_groundIndex;
+        current->m_middleGroundIndex = imported->m_middleGroundIndex;
+        current->m_groundLineIndex = imported->m_groundLineIndex;
+        current->m_fontIndex = imported->m_fontIndex;
+        current->m_colorPage = imported->m_colorPage;
+
+        if (imported->m_effectManager && current->m_effectManager) {
+            editor->transferDefaultColors(imported->m_effectManager, current->m_effectManager);
+        }
+
+        editor->levelSettingsUpdated();
+        return true;
+    }
+
     bool copyToClipboard(std::string const& text) {
         return !text.empty() && geode::utils::clipboard::write(text);
     }
