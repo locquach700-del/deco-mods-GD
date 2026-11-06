@@ -50,35 +50,13 @@ jobs:
           path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
           PY
 
-      - name: Check out pinned 2.2081 bindings
-        uses: actions/checkout@v4
-        with:
-          repository: geode-sdk/bindings
-          ref: f58fcb8edf0a86aa89e4782efcf7dcc840c9c5c5
-          path: bindings-repo
-
-      - name: Check out Cocos mapping headers
-        uses: actions/checkout@v4
-        with:
-          repository: geode-sdk/bindings
-          ref: main
-          path: bindings-mappings
-
-      - name: Add Cocos mapping headers for the pinned bindings
-        shell: bash
-        run: |
-          mkdir -p bindings-repo/bindings/include/Geode/mapping
-          cp -R bindings-mappings/bindings/include/Geode/mapping/. bindings-repo/bindings/include/Geode/mapping/
-
-      - name: Set Geode bindings path
-        shell: bash
-        run: echo "GEODE_BINDINGS_REPO_PATH=$GITHUB_WORKSPACE/bindings-repo" >> "$GITHUB_ENV"
-
       - name: Build Geode package
         id: geode-build
         uses: geode-sdk/build-geode-mod@main
         with:
           sdk: 4.10.2
+          bindings: geode-sdk/bindings
+          bindings-ref: cd269606418c1f749d7a9e71d602478f944c8af8
           target: ${{ matrix.target }}
           path: ./
           android-ndk-version: 27.3.13750724
