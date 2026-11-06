@@ -138,15 +138,22 @@ namespace {
         return fields;
     }
 
-    // Copy visual construction, not playable mechanics. Regular solid blocks,
-    // slopes and breakable blocks are included as visual geometry; imported
-    // copies are changed to NoTouch so they cannot change the target gameplay.
-    // Hazards, portals, pads, rings, collectibles, gameplay triggers and audio
-    // triggers are deliberately not included.
+    // Only serialize objects from the actual editor level. Some runtime-only
+    // playtest objects have transient members that are not safe to save.
+    // Start Position and other special/effect objects are not copied.
     bool isStyleObject(GameObject* object) {
         if (!object) return false;
 
+        // 749 is the Start Position object. It is not decoration and its save
+        // routine can access editor-only state that is absent on runtime copies.
+        if (object->m_objectID == 749) return false;
+
+        // Color triggers are visual palette data, so allow them explicitly.
         if (object->isColorTrigger() || object->m_isColorTrigger) return true;
+
+        // Do not serialize effect/trigger objects through this visual path.
+        if (object->m_classType == GameObjectClassType::Effect) return false;
+
         if (object->m_isDecoration || object->m_isDecoration2) return true;
 
         switch (object->m_objectType) {
@@ -154,7 +161,7 @@ namespace {
             case GameObjectType::Decoration:
             case GameObjectType::Slope:
             case GameObjectType::Breakable:
-                return object->m_classType != GameObjectClassType::Effect;
+                return true;
             default:
                 return false;
         }
@@ -616,15 +623,20 @@ public:
     }
 
     void onScan(cocos2d::CCObject*) {
+        // Geometry Dash's own object-copy path serializes objects from
+        // LevelEditorLayer. Never run getSaveString on live PlayLayer objects.
         auto* editor = LevelEditorLayer::get();
-        auto* play = PlayLayer::get();
-        auto* active = editor
-            ? static_cast<GJBaseGameLayer*>(editor)
-            : static_cast<GJBaseGameLayer*>(play);
+        if (!editor) {
+            this->setStatus(
+                "Open this level in the Level Editor before scanning. Play Mode scanning is disabled for safety.",
+                true
+            );
+            return;
+        }
 
         StyleData data;
         std::string error;
-        if (!scanLayer(active, data, error)) {
+        if (!scanLayer(static_cast<GJBaseGameLayer*>(editor), data, error)) {
             this->setStatus(error, true);
             return;
         }
