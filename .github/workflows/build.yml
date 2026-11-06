@@ -34,9 +34,10 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
-      # Geode SDK 3.5's CMake helper compares the manifest's "geode" value
-      # literally to GEODE_VERSION_FULL, so build with the exact SDK version.
-      - name: Prepare manifest for Geode 3.5 CMake validation
+      # The Geode CMake packaging helper requires the manifest's geode field
+      # to match the exact SDK version while building. Restore the loader
+      # compatibility comparator in the final .geode archive below.
+      - name: Prepare manifest for Geode 4.10.2 CMake validation
         shell: bash
         run: |
           python - <<'PY'
@@ -45,43 +46,23 @@ jobs:
 
           path = Path("mod.json")
           manifest = json.loads(path.read_text(encoding="utf-8"))
-          manifest["geode"] = "3.5.0"
+          manifest["geode"] = "4.10.2"
           path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
           PY
-
-      - name: Check out bindings snapshot for Geode SDK 3.5
-        uses: actions/checkout@v4
-        with:
-          repository: geode-sdk/bindings
-          ref: 1cd601f0a8f0d80ee1e56a647d62852cf11f079c
-          path: bindings-repo
-
-      - name: Add legacy vector mapping header for Geode 3.5
-        shell: bash
-        run: |
-          mkdir -p bindings-repo/bindings/include/Geode/mapping
-          cat > bindings-repo/bindings/include/Geode/mapping/vector.hpp <<'EOF'
-          #pragma once
-          #include <vector>
-          EOF
-
-      - name: Set Geode bindings path
-        shell: bash
-        run: echo "GEODE_BINDINGS_REPO_PATH=$GITHUB_WORKSPACE/bindings-repo" >> "$GITHUB_ENV"
 
       - name: Build Geode package
         id: geode-build
         uses: geode-sdk/build-geode-mod@main
         with:
-          sdk: 3.5.0
+          sdk: 4.10.2
+          bindings: geode-sdk/bindings
+          bindings-ref: f58fcb8edf0a86aa89e4782efcf7dcc840c9c5c5
           target: ${{ matrix.target }}
           path: ./
           android-ndk-version: 27.3.13750724
-          configure-args: -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DGEODE_DISABLE_FMT_CONSTEVAL=ON
+          configure-args: -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DGEODE_DISABLE_FMT_CONSTEVAL=ON -DGEODE_GD_VERSION=2.2081 -DGEODE_COMP_GD_VERSION=22081
 
-      # Geode 3.x supports one comparator in mod.json. It also rejects
-      # mismatched major versions, so >=3.0.0 allows 3.x and refuses 4.x.
-      - name: Set loader-compatible Geode constraint in package
+      - name: Restore Geode 4.x compatibility constraint in package
         shell: bash
         env:
           BUILD_OUTPUT: ${{ steps.geode-build.outputs.build-output }}
@@ -112,7 +93,7 @@ jobs:
                               manifest = json.loads(data.decode("utf-8"))
                               if manifest.get("id") != "developer.stylescanner":
                                   raise RuntimeError("Unexpected mod ID in package")
-                              manifest["geode"] = ">=3.0.0"
+                              manifest["geode"] = ">=4.0.0"
                               data = json.dumps(manifest, indent=2).encode("utf-8")
                               found_manifest = True
                           target.writestr(entry, data)
