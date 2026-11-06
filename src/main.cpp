@@ -1,5 +1,6 @@
 #include <Geode/Geode.hpp>
 #include <Geode/ui/Popup.hpp>
+#include <Geode/binding/CCMenuItemSpriteExtra.hpp>
 #include <Geode/ui/TextInput.hpp>
 #include <Geode/cocos/robtop/keyboard_dispatcher/CCKeyboardDispatcher.h>
 
@@ -683,13 +684,13 @@ namespace {
         bool m_f3IsDown = false;
 
     public:
-        void keyDown(cocos2d::enumKeyCodes key) override {
+        void keyDown(cocos2d::enumKeyCodes key, double) override {
             if (key != cocos2d::KEY_F3 || m_f3IsDown) return;
             m_f3IsDown = true;
             toggleStyleScanner();
         }
 
-        void keyUp(cocos2d::enumKeyCodes key) override {
+        void keyUp(cocos2d::enumKeyCodes key, double) override {
             if (key == cocos2d::KEY_F3) m_f3IsDown = false;
         }
     };
