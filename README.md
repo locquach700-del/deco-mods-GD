@@ -4,7 +4,7 @@ Geode mod ID: `developer.stylescanner`
 Version: `1.0.0`  
 Game target: Geometry Dash `2.2081`  
 Platforms: Windows x64 and Android (armv7 / arm64)  
-Build baseline: Geode SDK `4.10.2`, with the 2.2081 bindings pinned to commit `f58fcb8edf0a86aa89e4782efcf7dcc840c9c5c5`.
+Build baseline: Geode SDK `5.11.2`, with the 2.2081 bindings pinned to commit `cd269606418c1f749d7a9e71d602478f944c8af8`.
 
 ## Features
 
@@ -30,13 +30,13 @@ The serialized settings string contains other editor settings, but StyleScanner 
 
 ## Build and Geode compatibility
 
-There is a real compatibility conflict in the requested version bounds: the Geode 3.x SDK released before the 2.2081 bindings were available, and SDK 3.5.0 ships only the older 2.206 bindings. It cannot produce a valid 2.2081 binary by simply compiling against today's bindings. The Geode 4.10.2 SDK is the compatible 4.x baseline used here.
+The source is built against Geode SDK 5.11.2 and the pinned Geometry Dash 2.2081 bindings snapshot. The workflow uses the October/November 2026 bindings commit recorded above so the generated 2.2081 bindings include their required type dependencies and current Cocos mappings.
 
-Geode's loader version parser accepts one comparator and treats differing major versions as incompatible. The manifest therefore uses `>=4.0.0`, which admits Geode 4.x and rejects other major versions. It cannot truthfully be `>=3.0.0 <4.00.0` for a 2.2081 build.
+The manifest uses `>=5.0.0`. Geode's loader requires matching major versions, so this admits Geode 5.x and does not claim compatibility with Geode 4.x or earlier.
 
-The SDK's CMake packaging helper requires an exact `geode` value during packaging. CI temporarily changes the build workspace manifest to `4.10.2`, builds against the pinned 2.2081 bindings, then restores `>=4.0.0` inside the generated `.geode` archive.
+The SDK's CMake packaging helper requires the manifest's `geode` field to exactly equal the SDK version during packaging. CI temporarily changes the build workspace manifest to `5.11.2`, builds the mod, then restores `>=5.0.0` inside the generated `.geode` archive.
 
-The workflow builds three packages on every push and pull request:
+The GitHub Actions workflow builds three packages on every push and pull request:
 
 - Windows x64 (`Win64`)
 - Android armv7 (`Android32`)
@@ -44,7 +44,7 @@ The workflow builds three packages on every push and pull request:
 
 It uses `geode-sdk/build-geode-mod` and uploads the resulting `.geode` packages as separate workflow artifacts.
 
-Local build requirements: CMake 3.21+, the Geode 4.10.2 SDK, and the `GEODE_SDK` environment variable pointing to that SDK. The build must use the 2.2081 bindings revision pinned in the workflow and configure with:
+Local build requirements: CMake 3.21+, the Geode 5.11.2 SDK, and the `GEODE_SDK` environment variable pointing to that SDK. Configure with the same Geometry Dash version values used by CI:
 
 ```sh
 cmake -B build -DCMAKE_BUILD_TYPE=Release \
