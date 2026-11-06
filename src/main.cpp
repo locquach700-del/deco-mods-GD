@@ -248,7 +248,7 @@ namespace {
 
         // Deflate the complete payload once. This is much smaller than
         // base64-encoding every object separately and keeps clipboard pasting fast.
-        auto compressed = cocos2d::ZipUtils::compressString(payload, false, 9, 0);
+        auto compressed = cocos2d::ZipUtils::compressString(payload, false, 0);
         if (compressed.empty()) {
             error = "The style data could not be compressed.";
             return false;
