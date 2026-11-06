@@ -447,7 +447,7 @@ protected:
         scanButton->setPosition({-86.f, 71.f});
         m_buttonMenu->addChild(scanButton);
 
-        auto* copyButton = cocos2d::CCMenuItemSpriteExtra::create(
+        auto* copyButton = CCMenuItemSpriteExtra::create(
             ButtonSprite::create("Copy Code", "goldFont.fnt", "GJ_button_02.png", 0.68f),
             this,
             menu_selector(StyleScannerPopup::onCopy)
@@ -483,7 +483,7 @@ protected:
         });
         m_mainLayer->addChild(m_importInput);
 
-        auto* applyButton = cocos2d::CCMenuItemSpriteExtra::create(
+        auto* applyButton = CCMenuItemSpriteExtra::create(
             ButtonSprite::create("Apply Style to Editor Level", "goldFont.fnt", "GJ_button_03.png", 0.62f),
             this,
             menu_selector(StyleScannerPopup::onApply)
