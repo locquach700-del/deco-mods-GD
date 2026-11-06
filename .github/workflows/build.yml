@@ -37,7 +37,7 @@ jobs:
       # The Geode CMake packaging helper requires the manifest's geode field
       # to match the exact SDK version while building. Restore the loader
       # compatibility comparator in the final .geode archive below.
-      - name: Prepare manifest for Geode 4.10.2 CMake validation
+      - name: Prepare manifest for Geode 5.11.2 CMake validation
         shell: bash
         run: |
           python - <<'PY'
@@ -46,7 +46,7 @@ jobs:
 
           path = Path("mod.json")
           manifest = json.loads(path.read_text(encoding="utf-8"))
-          manifest["geode"] = "4.10.2"
+          manifest["geode"] = "5.11.2"
           path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
           PY
 
@@ -54,7 +54,7 @@ jobs:
         id: geode-build
         uses: geode-sdk/build-geode-mod@main
         with:
-          sdk: 4.10.2
+          sdk: 5.11.2
           bindings: geode-sdk/bindings
           bindings-ref: cd269606418c1f749d7a9e71d602478f944c8af8
           target: ${{ matrix.target }}
@@ -62,7 +62,7 @@ jobs:
           android-ndk-version: 27.3.13750724
           configure-args: -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DGEODE_DISABLE_FMT_CONSTEVAL=ON -DGEODE_GD_VERSION=2.2081 -DGEODE_COMP_GD_VERSION=22081
 
-      - name: Restore Geode 4.x compatibility constraint in package
+      - name: Restore Geode 5.x compatibility constraint in package
         shell: bash
         env:
           BUILD_OUTPUT: ${{ steps.geode-build.outputs.build-output }}
@@ -93,7 +93,7 @@ jobs:
                               manifest = json.loads(data.decode("utf-8"))
                               if manifest.get("id") != "developer.stylescanner":
                                   raise RuntimeError("Unexpected mod ID in package")
-                              manifest["geode"] = ">=4.0.0"
+                              manifest["geode"] = ">=5.0.0"
                               data = json.dumps(manifest, indent=2).encode("utf-8")
                               found_manifest = True
                           target.writestr(entry, data)
