@@ -59,8 +59,8 @@ jobs:
           bindings-ref: cd269606418c1f749d7a9e71d602478f944c8af8
           target: ${{ matrix.target }}
           path: ./
-          android-ndk-version: 27.3.13750724
-          configure-args: -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DGEODE_DISABLE_FMT_CONSTEVAL=ON -DGEODE_GD_VERSION=2.2081 -DGEODE_COMP_GD_VERSION=22081
+          android-ndk-version: 29.0.14206865
+          configure-args: -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_CXX_FLAGS=-DFMT_CONSTEVAL= -DGEODE_GD_VERSION=2.2081 -DGEODE_COMP_GD_VERSION=22081
 
       - name: Restore Geode 5.x compatibility constraint in package
         shell: bash
