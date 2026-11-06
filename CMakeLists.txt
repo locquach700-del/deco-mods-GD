@@ -20,5 +20,5 @@ add_subdirectory($ENV{GEODE_SDK} ${CMAKE_CURRENT_BINARY_DIR}/geode)
 setup_geode_mod(${PROJECT_NAME})
 
 if (WIN32)
-    target_link_libraries(${PROJECT_NAME} PRIVATE user32)
+    target_link_libraries(${PROJECT_NAME} user32)
 endif()
