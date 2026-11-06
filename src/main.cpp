@@ -8,7 +8,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -18,7 +20,8 @@ using namespace geode::prelude;
 class StyleScannerPopup;
 
 namespace {
-    constexpr std::string_view kCodeMagic = "STY2";
+    constexpr std::string_view kCodeMagic = "STY3";
+    constexpr std::string_view kPreviousCodeMagic = "STY2";
     constexpr std::string_view kLegacyCodeMagic = "STY1";
     constexpr size_t kMaxCodeBytes = 12 * 1024 * 1024;
     constexpr size_t kMaxPayloadBytes = 64 * 1024 * 1024;
@@ -27,11 +30,27 @@ namespace {
     constexpr size_t kMaxObjects = 50000;
     constexpr size_t kMaxNameBytes = 4096;
 
+    struct DecoItem {
+        std::string record;
+        float offsetX = 0.f;
+        float offsetY = 0.f;
+    };
+
+    struct DecoTemplate {
+        uint32_t anchorType = 0;
+        float anchorWidth = 30.f;
+        float anchorHeight = 30.f;
+        std::vector<DecoItem> items;
+    };
+
     struct StyleData {
         std::string levelName;
         std::string creatorName;
         std::string settings;
+        // Used only when decoding old STY1/STY2 codes. New exports store
+        // decoration templates relative to source blocks instead of whole maps.
         std::vector<std::string> objects;
+        std::vector<DecoTemplate> templates;
     };
 
     StyleScannerPopup* g_popup = nullptr;
@@ -138,33 +157,49 @@ namespace {
         return fields;
     }
 
-    // Only serialize objects from the actual editor level. Some runtime-only
-    // playtest objects have transient members that are not safe to save.
-    // Start Position and other special/effect objects are not copied.
-    bool isStyleObject(GameObject* object) {
-        if (!object) return false;
-
-        // 749 is the Start Position object. It is not decoration and its save
-        // routine can access editor-only state that is absent on runtime copies.
-        if (object->m_objectID == 749) return false;
-
-        // Color triggers are visual palette data, so allow them explicitly.
-        if (object->isColorTrigger() || object->m_isColorTrigger) return true;
-
-        // Do not serialize effect/trigger objects through this visual path.
+    // Only decorative pieces are copied. Regular level geometry is used
+    // as an anchor during matching, but is never exported or imported.
+    bool isDecorationPart(GameObject* object) {
+        if (!object || object->m_objectID == 749) return false;
         if (object->m_classType == GameObjectClassType::Effect) return false;
 
-        if (object->m_isDecoration || object->m_isDecoration2) return true;
+        if (object->m_isDecoration || object->m_isDecoration2) {
+            switch (object->m_objectType) {
+                case GameObjectType::Solid:
+                case GameObjectType::Decoration:
+                case GameObjectType::Slope:
+                case GameObjectType::Breakable:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+        return object->m_objectType == GameObjectType::Decoration;
+    }
+
+    bool isAnchorBlock(GameObject* object) {
+        if (!object || object->m_objectID == 749) return false;
+        if (object->m_classType == GameObjectClassType::Effect ||
+            isDecorationPart(object)) return false;
 
         switch (object->m_objectType) {
             case GameObjectType::Solid:
-            case GameObjectType::Decoration:
             case GameObjectType::Slope:
             case GameObjectType::Breakable:
                 return true;
             default:
                 return false;
         }
+    }
+
+    float safeObjectWidth(GameObject* object) {
+        return object && std::isfinite(object->m_width) && object->m_width > 1.f
+            ? object->m_width : 30.f;
+    }
+
+    float safeObjectHeight(GameObject* object) {
+        return object && std::isfinite(object->m_height) && object->m_height > 1.f
+            ? object->m_height : 30.f;
     }
 
     void appendU32(std::string& output, uint32_t value) {
@@ -183,6 +218,19 @@ namespace {
             (static_cast<uint32_t>(static_cast<uint8_t>(input[cursor + 3])) << 24);
         cursor += 4;
         return true;
+    }
+
+    void appendFloat(std::string& output, float value) {
+        uint32_t bits = 0;
+        std::memcpy(&bits, &value, sizeof(bits));
+        appendU32(output, bits);
+    }
+
+    bool readFloat(std::string_view input, size_t& cursor, float& value) {
+        uint32_t bits = 0;
+        if (!readU32(input, cursor, bits)) return false;
+        std::memcpy(&value, &bits, sizeof(value));
+        return std::isfinite(value);
     }
 
     bool appendField(std::string& output, std::string_view field) {
@@ -227,13 +275,32 @@ namespace {
         if (data.levelName.size() > kMaxNameBytes ||
             data.creatorName.size() > kMaxNameBytes ||
             data.settings.size() > kMaxSettingsBytes ||
-            data.objects.size() > kMaxObjects) {
-            error = "This style exceeds the safe export limits (50,000 objects / 64 MiB).";
+            data.templates.size() > kMaxObjects) {
+            error = "The style archive exceeds its safe export limits.";
             return false;
         }
 
+        size_t totalItems = 0;
+        for (auto const& styleTemplate : data.templates) {
+            totalItems += styleTemplate.items.size();
+            if (totalItems > kMaxObjects ||
+                styleTemplate.items.size() > kMaxObjects ||
+                !std::isfinite(styleTemplate.anchorWidth) ||
+                !std::isfinite(styleTemplate.anchorHeight) ||
+                styleTemplate.anchorWidth <= 0.f ||
+                styleTemplate.anchorHeight <= 0.f ||
+                styleTemplate.anchorWidth > 10000.f ||
+                styleTemplate.anchorHeight > 10000.f) {
+                error = "A block decoration template is outside the safe limits.";
+                return false;
+            }
+        }
+
         std::string payload;
-        payload.reserve(std::min<size_t>(kMaxPayloadBytes, 256 + data.settings.size() + data.objects.size() * 96));
+        payload.reserve(std::min<size_t>(
+            kMaxPayloadBytes,
+            256 + data.settings.size() + totalItems * 128
+        ));
         if (!appendField(payload, data.levelName) ||
             !appendField(payload, data.creatorName) ||
             !appendField(payload, data.settings)) {
@@ -241,20 +308,32 @@ namespace {
             return false;
         }
 
-        appendU32(payload, static_cast<uint32_t>(data.objects.size()));
-        for (auto const& object : data.objects) {
-            if (object.empty() || object.size() > kMaxObjectBytes || !validObjectRecord(object)) {
-                error = "A visual object record is invalid or too large.";
-                return false;
-            }
-            if (!appendField(payload, object)) {
-                error = "The level exceeds the 64 MiB uncompressed style limit.";
-                return false;
+        appendU32(payload, static_cast<uint32_t>(data.templates.size()));
+        for (auto const& styleTemplate : data.templates) {
+            appendU32(payload, styleTemplate.anchorType);
+            appendFloat(payload, styleTemplate.anchorWidth);
+            appendFloat(payload, styleTemplate.anchorHeight);
+            appendU32(payload, static_cast<uint32_t>(styleTemplate.items.size()));
+
+            for (auto const& item : styleTemplate.items) {
+                if (item.record.empty() || item.record.size() > kMaxObjectBytes ||
+                    !validObjectRecord(item.record) ||
+                    !std::isfinite(item.offsetX) || !std::isfinite(item.offsetY) ||
+                    std::abs(item.offsetX) > 100000.f ||
+                    std::abs(item.offsetY) > 100000.f ||
+                    !appendField(payload, item.record)) {
+                    error = "A decoration piece in the style archive is invalid.";
+                    return false;
+                }
+                appendFloat(payload, item.offsetX);
+                appendFloat(payload, item.offsetY);
+                if (payload.size() > kMaxPayloadBytes) {
+                    error = "The style exceeds the 64 MiB uncompressed export limit.";
+                    return false;
+                }
             }
         }
 
-        // Deflate the complete payload once. This is much smaller than
-        // base64-encoding every object separately and keeps clipboard pasting fast.
         auto compressed = cocos2d::ZipUtils::compressString(payload, false, 0);
         if (compressed.empty()) {
             error = "The style data could not be compressed.";
@@ -331,8 +410,9 @@ namespace {
         if (fields[0] == kLegacyCodeMagic) {
             return decodeLegacyStyle(fields, data, error);
         }
-        if (fields[0] != kCodeMagic || fields.size() != 2) {
-            error = "Unsupported style code. Expected STY2 or an older STY1 code.";
+        const bool previousFormat = fields[0] == kPreviousCodeMagic;
+        if ((!previousFormat && fields[0] != kCodeMagic) || fields.size() != 2) {
+            error = "Unsupported style code. Scan again with Style Scanner 1.1.0.";
             return false;
         }
 
@@ -360,18 +440,71 @@ namespace {
 
         uint32_t count = 0;
         if (!readU32(view, cursor, count) || count > kMaxObjects) {
-            error = "The style archive contains too many visual objects.";
+            error = "The style archive contains too many decoration templates.";
             return false;
         }
 
-        parsed.objects.reserve(count);
-        for (uint32_t i = 0; i < count; ++i) {
-            std::string object;
-            if (!readField(view, cursor, object, kMaxObjectBytes) || !validObjectRecord(object)) {
-                error = "A visual object record in the archive is invalid.";
-                return false;
+        size_t totalItems = 0;
+        if (previousFormat) {
+            parsed.objects.reserve(count);
+            for (uint32_t i = 0; i < count; ++i) {
+                std::string object;
+                if (!readField(view, cursor, object, kMaxObjectBytes) ||
+                    !validObjectRecord(object)) {
+                    error = "An old-format object record is invalid.";
+                    return false;
+                }
+                parsed.objects.emplace_back(std::move(object));
             }
-            parsed.objects.emplace_back(std::move(object));
+        } else {
+            parsed.templates.reserve(count);
+            for (uint32_t i = 0; i < count; ++i) {
+                DecoTemplate styleTemplate;
+                uint32_t itemCount = 0;
+                if (!readU32(view, cursor, styleTemplate.anchorType) ||
+                    !readFloat(view, cursor, styleTemplate.anchorWidth) ||
+                    !readFloat(view, cursor, styleTemplate.anchorHeight) ||
+                    !readU32(view, cursor, itemCount) ||
+                    itemCount > kMaxObjects ||
+                    styleTemplate.anchorWidth <= 0.f ||
+                    styleTemplate.anchorHeight <= 0.f ||
+                    styleTemplate.anchorWidth > 10000.f ||
+                    styleTemplate.anchorHeight > 10000.f) {
+                    error = "A block decoration template is invalid.";
+                    return false;
+                }
+
+                const bool validAnchor =
+                    styleTemplate.anchorType == static_cast<uint32_t>(GameObjectType::Solid) ||
+                    styleTemplate.anchorType == static_cast<uint32_t>(GameObjectType::Slope) ||
+                    styleTemplate.anchorType == static_cast<uint32_t>(GameObjectType::Breakable);
+                if (!validAnchor) {
+                    error = "The archive contains an unsupported block type.";
+                    return false;
+                }
+
+                if (totalItems + itemCount > kMaxObjects) {
+                    error = "The style archive contains too many decoration pieces.";
+                    return false;
+                }
+                totalItems += itemCount;
+                styleTemplate.items.reserve(itemCount);
+
+                for (uint32_t j = 0; j < itemCount; ++j) {
+                    DecoItem item;
+                    if (!readField(view, cursor, item.record, kMaxObjectBytes) ||
+                        !validObjectRecord(item.record) ||
+                        !readFloat(view, cursor, item.offsetX) ||
+                        !readFloat(view, cursor, item.offsetY) ||
+                        std::abs(item.offsetX) > 100000.f ||
+                        std::abs(item.offsetY) > 100000.f) {
+                        error = "A decoration piece in the style archive is invalid.";
+                        return false;
+                    }
+                    styleTemplate.items.emplace_back(std::move(item));
+                }
+                parsed.templates.emplace_back(std::move(styleTemplate));
+            }
         }
 
         if (cursor != view.size()) {
