@@ -22,7 +22,8 @@ using namespace geode::prelude;
 class StyleScannerPopup;
 
 namespace {
-    constexpr std::string_view kCodeMagic = "STY3";
+    constexpr std::string_view kCodeMagic = "STY4";
+    constexpr std::string_view kPreviousTemplateMagic = "STY3";
     constexpr std::string_view kPreviousCodeMagic = "STY2";
     constexpr std::string_view kLegacyCodeMagic = "STY1";
     constexpr size_t kMaxCodeBytes = 12 * 1024 * 1024;
@@ -428,7 +429,9 @@ namespace {
             return decodeLegacyStyle(fields, data, error);
         }
         const bool previousFormat = fields[0] == kPreviousCodeMagic;
-        if ((!previousFormat && fields[0] != kCodeMagic) || fields.size() != 2) {
+        const bool previousTemplateFormat = fields[0] == kPreviousTemplateMagic;
+        if ((!previousFormat && !previousTemplateFormat && fields[0] != kCodeMagic) ||
+            fields.size() != 2) {
             error = "Unsupported style code. Scan again with Style Scanner 1.1.0.";
             return false;
         }
@@ -479,7 +482,7 @@ namespace {
                 DecoTemplate styleTemplate;
                 uint32_t itemCount = 0;
                 if (!readU32(view, cursor, styleTemplate.anchorType) ||
-                    !readU32(view, cursor, styleTemplate.anchorObjectID) ||
+                    (!previousTemplateFormat && !readU32(view, cursor, styleTemplate.anchorObjectID)) ||
                     !readFloat(view, cursor, styleTemplate.anchorWidth) ||
                     !readFloat(view, cursor, styleTemplate.anchorHeight) ||
                     !readU32(view, cursor, itemCount) ||
