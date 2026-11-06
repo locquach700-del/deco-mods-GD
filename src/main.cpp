@@ -20,6 +20,8 @@
 
 using namespace geode::prelude;
 
+class StyleScannerPopup;
+
 namespace {
     constexpr std::string_view kCodeMagic = "STY1";
     constexpr size_t kMaxCodeBytes = 4 * 1024 * 1024;
@@ -35,7 +37,6 @@ namespace {
         std::vector<std::string> objects;
     };
 
-    class StyleScannerPopup;
     StyleScannerPopup* g_popup = nullptr;
 
     int base64Value(unsigned char ch) {
@@ -407,7 +408,7 @@ namespace {
     }
 }
 
-class StyleScannerPopup final : public geode::Popup<> {
+class StyleScannerPopup final : public geode::Popup {
 protected:
     geode::TextInput* m_exportInput = nullptr;
     geode::TextInput* m_importInput = nullptr;
@@ -418,7 +419,8 @@ protected:
         if (g_popup == this) g_popup = nullptr;
     }
 
-    bool setup() override {
+    bool init() override {
+        if (!geode::Popup::init(420.f, 360.f)) return false;
         this->setTitle("Style Scanner & Deco Copier", "goldFont.fnt", 0.58f, 20.f);
 
         auto* exportTitle = cocos2d::CCLabelBMFont::create(
@@ -437,7 +439,7 @@ protected:
         m_exportInput->setScale(0.78f);
         m_mainLayer->addChild(m_exportInput);
 
-        auto* scanButton = cocos2d::CCMenuItemSpriteExtra::create(
+        auto* scanButton = CCMenuItemSpriteExtra::create(
             ButtonSprite::create("Scan Current Level", "goldFont.fnt", "GJ_button_01.png", 0.68f),
             this,
             menu_selector(StyleScannerPopup::onScan)
@@ -530,7 +532,7 @@ protected:
 public:
     static StyleScannerPopup* create() {
         auto* popup = new StyleScannerPopup();
-        if (popup && popup->initAnchored(420.f, 360.f)) {
+        if (popup && popup->init()) {
             popup->autorelease();
             return popup;
         }
@@ -658,7 +660,7 @@ public:
 
     void onClose(cocos2d::CCObject* sender) override {
         if (g_popup == this) g_popup = nullptr;
-        geode::Popup<>::onClose(sender);
+        geode::Popup::onClose(sender);
     }
 };
 
