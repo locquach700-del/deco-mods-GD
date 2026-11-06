@@ -6,9 +6,9 @@
   },
   "id": "developer.stylescanner",
   "name": "Style Scanner & Deco Copier",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "developer": "locquach700-del",
-  "description": "Compressed visual style scanner and copier with full visual-object export, Z-layer preservation, and clipboard import.",
+  "description": "Safer editor-only visual style scanner with compressed export, expanded visual-object support, Z-layer preservation, and clipboard import.",
   "platforms": [
     "win",
     "android"
