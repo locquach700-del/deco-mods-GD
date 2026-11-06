@@ -461,7 +461,9 @@ protected:
         m_exportInput->setMaxCharCount(180);
         m_exportInput->setTextAlign(geode::TextInputAlign::Left);
         m_mainLayer->addChildAtPosition(m_exportInput, geode::Anchor::Center, {0.f, 119.f});
-        m_exportInput->setEnabled(false);
+        // Keep the preview readable. Disabling Geode TextInput can make its
+        // text appear dim/blank depending on the platform theme.
+        m_exportInput->setEnabled(true);
 
         auto* scanButton = CCMenuItemSpriteExtra::create(
             ButtonSprite::create("Scan Level", "goldFont.fnt", "GJ_button_01.png", 0.72f),
@@ -590,6 +592,7 @@ public:
         constexpr size_t previewLength = 130;
         std::string preview = code.substr(0, previewLength);
         if (code.size() > previewLength) preview += "...";
+        m_exportInput->setEnabled(true);
         m_exportInput->setString(preview);
         const std::string label =
             "Source Style Name: " + (data.levelName.empty() ? "[Unnamed]" : data.levelName) +
@@ -598,16 +601,11 @@ public:
         m_metadataLabel->setString(label.c_str());
         m_metadataLabel->limitLabelWidth(385.f, 0.43f, 0.2f);
 
-        if (data.objects.empty()) {
-            this->setStatus(
-                "Scan complete: no decoration objects found. Level color / background data was exported. Tap Copy Code."
-            );
-        } else {
-            this->setStatus(
-                "Scan complete: " + std::to_string(data.objects.size()) +
-                " decoration / color-trigger objects. Tap Copy Code."
-            );
-        }
+        this->setStatus(
+            "SCAN OK | Objects: " + std::to_string(data.objects.size()) +
+            " | Code: " + std::to_string(code.size()) +
+            " chars | Tap Copy Code."
+        );
     }
 
     void onCopy(cocos2d::CCObject*) {
