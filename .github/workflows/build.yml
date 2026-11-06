@@ -1,0 +1,50 @@
+name: Build StyleScanner
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            target: Win64
+            label: Windows x64
+            artifact: windows-x64
+          - runner: ubuntu-latest
+            target: Android32
+            label: Android armv7
+            artifact: android-armv7
+          - runner: ubuntu-latest
+            target: Android64
+            label: Android arm64
+            artifact: android-arm64
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Build Geode package
+        id: geode-build
+        uses: geode-sdk/build-geode-mod@main
+        with:
+          sdk: 3.5.0
+          target: ${{ matrix.target }}
+          path: ./
+
+      - name: Upload .geode package
+        uses: actions/upload-artifact@v4
+        with:
+          name: StyleScanner-${{ matrix.artifact }}
+          path: ${{ steps.geode-build.outputs.build-output }}/*.geode
+          if-no-files-found: error
