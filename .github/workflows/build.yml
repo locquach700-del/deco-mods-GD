@@ -34,6 +34,24 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
+      # Geode SDK 3.5's CMake helper compares the manifest's "geode" value
+      # literally to GEODE_VERSION_FULL instead of accepting a semver range.
+      # Temporarily use the exact build SDK, then restore the declared range
+      # inside the finished .geode archive below. The committed mod.json stays
+      # at the requested >=3.0.0 <4.00.0 compatibility range.
+      - name: Prepare manifest for Geode 3.5 CMake validation
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("mod.json")
+          manifest = json.loads(path.read_text(encoding="utf-8"))
+          manifest["geode"] = "3.5.0"
+          path.write_text(json.dumps(manifest, indent=2) + "\\n", encoding="utf-8")
+          PY
+
       - name: Build Geode package
         id: geode-build
         uses: geode-sdk/build-geode-mod@main
@@ -42,6 +60,42 @@ jobs:
           target: ${{ matrix.target }}
           path: ./
           configure-args: -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+
+      - name: Restore declared Geode compatibility range in package
+        shell: bash
+        env:
+          BUILD_OUTPUT: ${{ steps.geode-build.outputs.build-output }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import tempfile
+          import zipfile
+          from pathlib import Path
+
+          output = Path(os.environ["BUILD_OUTPUT"])
+          packages = list(output.glob("*.geode"))
+          if not packages:
+              raise SystemExit(f"No .geode package found in {output}")
+
+          for package in packages:
+              fd, temporary_name = tempfile.mkstemp(suffix=".geode", dir=output)
+              os.close(fd)
+              temporary = Path(temporary_name)
+              try:
+                  with zipfile.ZipFile(package, "r") as source, zipfile.ZipFile(temporary, "w") as target:
+                      for entry in source.infolist():
+                          data = source.read(entry.filename)
+                          if entry.filename == "mod.json":
+                              manifest = json.loads(data.decode("utf-8"))
+                              manifest["geode"] = ">=3.0.0 <4.00.0"
+                              data = (json.dumps(manifest, indent=2) + "\\n").encode("utf-8")
+                          target.writestr(entry, data)
+                  temporary.replace(package)
+              except Exception:
+                  temporary.unlink(missing_ok=True)
+                  raise
+          PY
 
       - name: Upload .geode package
         uses: actions/upload-artifact@v4
