@@ -1015,7 +1015,8 @@ public:
         auto const& data = m_importData;
         size_t addedPieces = 0;
         size_t matchedBlocks = 0;
-        size_t skippedDecoratedBlocks = 0;
+        size_t totalTargetBlocks = 0;
+        size_t unmatchedBlocks = 0;
 
         if (!data.templates.empty()) {
             struct TargetBlock {
@@ -1032,7 +1033,6 @@ public:
             };
 
             std::vector<TargetBlock> targetBlocks;
-            std::unordered_map<uint64_t, std::vector<cocos2d::CCPoint>> decorationGrid;
             if (editor->m_objects) {
                 const unsigned int count = editor->m_objects->count();
                 targetBlocks.reserve(std::min<size_t>(count, 20000));
@@ -1048,9 +1048,6 @@ public:
                             safeObjectWidth(object),
                             safeObjectHeight(object)
                         });
-                    } else if (isDecorationPart(object)) {
-                        const auto pos = object->getPosition();
-                        decorationGrid[spatialKey(pos)].push_back(pos);
                     }
                 }
             }
@@ -1059,45 +1056,28 @@ public:
                 this->setStatus("No regular blocks were found in your target level to attach the deco to.", true);
                 return;
             }
+            totalTargetBlocks = targetBlocks.size();
 
             std::string serializedPieces;
             std::vector<Placement> placements;
             size_t totalBytes = 0;
 
             for (auto const& target : targetBlocks) {
-                // Do not stack a second source pattern on top of blocks that
-                // already have decoration pieces around them.
-                bool alreadyDecorated = false;
-                const auto blockCellX = static_cast<int32_t>(std::floor(target.position.x / 64.f));
-                const auto blockCellY = static_cast<int32_t>(std::floor(target.position.y / 64.f));
-                const int blockRadius = std::clamp(
-                    static_cast<int>(std::ceil((std::max(target.width, target.height) * 0.5f + 18.f) / 64.f)),
-                    1, 8
-                );
-                for (int x = -blockRadius; x <= blockRadius && !alreadyDecorated; ++x) {
-                    for (int y = -blockRadius; y <= blockRadius && !alreadyDecorated; ++y) {
-                        const auto found = decorationGrid.find(spatialKey(blockCellX + x, blockCellY + y));
-                        if (found == decorationGrid.end()) continue;
-                        for (auto const& pos : found->second) {
-                            if (std::abs(pos.x - target.position.x) <= target.width * 0.5f + 18.f &&
-                                std::abs(pos.y - target.position.y) <= target.height * 0.5f + 18.f) {
-                                alreadyDecorated = true;
-                                break;
-                            }
-                        }
-                    }
-                }
-                if (alreadyDecorated) {
-                    ++skippedDecoratedBlocks;
-                    continue;
-                }
-
                 const uint32_t targetType = static_cast<uint32_t>(target.object->m_objectType);
                 const DecoTemplate* bestTemplate = nullptr;
                 float bestScore = std::numeric_limits<float>::max();
 
                 for (auto const& candidate : data.templates) {
                     if (candidate.items.empty()) continue;
+
+                    // A source decoration template is valid only for the exact
+                    // same Geometry Dash object ID and object type. Do not
+                    // silently paste a different block's decoration style.
+                    if (candidate.anchorType != targetType ||
+                        candidate.anchorObjectID != static_cast<uint32_t>(target.object->m_objectID)) {
+                        continue;
+                    }
+
                     const float ratioX = target.width / candidate.anchorWidth;
                     const float ratioY = target.height / candidate.anchorHeight;
                     if (!std::isfinite(ratioX) || !std::isfinite(ratioY) ||
@@ -1105,12 +1085,8 @@ public:
 
                     float score = std::abs(std::log(ratioX)) +
                                   std::abs(std::log(ratioY));
-                    if (candidate.anchorType != targetType) score += 0.9f;
-                    if (candidate.anchorObjectID != static_cast<uint32_t>(target.object->m_objectID)) {
-                        score += 0.65f;
-                    }
-                    // Prefer a reusable compact pattern when two patterns fit
-                    // the target block equally well.
+                    // Prefer a reusable compact pattern when two templates
+                    // of the same block ID fit the target equally well.
                     score += static_cast<float>(candidate.items.size()) * 0.0001f;
 
                     if (score < bestScore) {
@@ -1119,7 +1095,10 @@ public:
                     }
                 }
 
-                if (!bestTemplate) continue;
+                if (!bestTemplate) {
+                    ++unmatchedBlocks;
+                    continue;
+                }
 
                 const float ratioX = target.width / bestTemplate->anchorWidth;
                 const float ratioY = target.height / bestTemplate->anchorHeight;
@@ -1188,15 +1167,23 @@ public:
             return;
         }
 
-        std::string result =
-            "Added " + std::to_string(addedPieces) + " deco pieces to " +
-            std::to_string(matchedBlocks) + " matching blocks";
-        if (skippedDecoratedBlocks > 0) {
-            result += " | skipped " + std::to_string(skippedDecoratedBlocks) +
-                      " blocks that already had deco";
+        std::string result;
+        if (matchedBlocks == 0) {
+            result =
+                "No exact block-ID matches: " + std::to_string(totalTargetBlocks) +
+                " target blocks checked. Scan a source level using the same block ID.";
+        } else {
+            result =
+                "Added " + std::to_string(addedPieces) + " deco pieces to " +
+                std::to_string(matchedBlocks) + " of " +
+                std::to_string(totalTargetBlocks) + " target blocks.";
+            if (unmatchedBlocks > 0) {
+                result += " " + std::to_string(unmatchedBlocks) +
+                          " blocks had no same-ID source pattern.";
+            }
         }
-        if (settingsApplied) result += " | background / ground / palette copied";
-        result += ". Your original map geometry, gameplay and music stay unchanged.";
+        if (settingsApplied) result += " Background / ground / palette copied.";
+        result += " Original map geometry, gameplay and music stay unchanged.";
         this->setStatus(result);
     }
 
