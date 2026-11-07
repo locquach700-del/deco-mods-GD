@@ -6,9 +6,9 @@
   },
   "id": "developer.stylescanner",
   "name": "Procedural Level Generator & Auto Deco",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "developer": "locquach700-del",
-  "description": "Creates new Geometry Dash layouts in ten difficulty tiers, then applies selectable RGB decoration themes and matching background, ground and middleground palettes. Color updates avoid unsafe colorForMode calls on newly created editor objects.",
+  "description": "Generates ten-tier Geometry Dash layouts and themed automatic decoration. Applies RGB directly in the editor, saves custom palette channels with static Color Triggers, and copies the selected theme to background, ground and middleground settings.",
   "platforms": [
     "win",
     "android"
