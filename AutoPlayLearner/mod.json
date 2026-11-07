@@ -1,0 +1,13 @@
+{
+  "geode": "5.0.0",
+  "gd": {
+    "win": "2.2081",
+    "android": "2.2081"
+  },
+  "id": "developer.autoplaylearner",
+  "name": "AutoPlay Learner",
+  "version": "v0.1.0",
+  "developer": "Community",
+  "description": "Records a trial run's inputs, profiles gameplay modes, and replays the same route.",
+  "tags": ["gameplay", "utility"]
+}
