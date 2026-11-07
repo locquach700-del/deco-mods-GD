@@ -946,44 +946,53 @@ namespace {
     bool g_generatedDecorated = false;
 
     GeneratorPalette paletteForTheme(int theme) {
+        // Six coordinated block-design palettes. These are used by the
+        // generated 3DL pieces; existing custom levels keep their own BG/Ground.
         switch (theme) {
-            case 1: // Inferno
+            case 1: // Grid Circuit
                 return {
-                    cocos2d::ccc3(255, 103, 45), cocos2d::ccc3(255, 210, 70),
-                    cocos2d::ccc3(28, 7, 13), cocos2d::ccc3(73, 20, 20),
-                    cocos2d::ccc3(255, 123, 49), cocos2d::ccc3(104, 28, 35)
+                    cocos2d::ccc3(50, 224, 255), cocos2d::ccc3(104, 112, 255),
+                    cocos2d::ccc3(7, 12, 33), cocos2d::ccc3(14, 25, 61),
+                    cocos2d::ccc3(66, 235, 255), cocos2d::ccc3(37, 48, 105)
                 };
-            case 2: // Ice Crystal
+            case 2: // Beveled Glass
                 return {
-                    cocos2d::ccc3(75, 210, 255), cocos2d::ccc3(205, 245, 255),
-                    cocos2d::ccc3(5, 20, 48), cocos2d::ccc3(18, 54, 93),
-                    cocos2d::ccc3(112, 224, 255), cocos2d::ccc3(27, 91, 133)
+                    cocos2d::ccc3(80, 190, 255), cocos2d::ccc3(176, 118, 255),
+                    cocos2d::ccc3(6, 17, 39), cocos2d::ccc3(21, 45, 82),
+                    cocos2d::ccc3(115, 220, 255), cocos2d::ccc3(47, 71, 126)
                 };
-            case 3: // Emerald Forest
+            case 3: // Industrial Metal
                 return {
-                    cocos2d::ccc3(75, 220, 130), cocos2d::ccc3(197, 255, 116),
-                    cocos2d::ccc3(5, 28, 21), cocos2d::ccc3(15, 67, 44),
-                    cocos2d::ccc3(89, 242, 150), cocos2d::ccc3(23, 91, 55)
+                    cocos2d::ccc3(255, 139, 57), cocos2d::ccc3(255, 220, 112),
+                    cocos2d::ccc3(25, 15, 10), cocos2d::ccc3(72, 43, 25),
+                    cocos2d::ccc3(255, 164, 76), cocos2d::ccc3(108, 70, 38)
                 };
-            case 4: // Galaxy
+            case 4: // Dark Void
                 return {
-                    cocos2d::ccc3(177, 92, 255), cocos2d::ccc3(255, 105, 205),
-                    cocos2d::ccc3(17, 8, 43), cocos2d::ccc3(48, 23, 83),
-                    cocos2d::ccc3(214, 133, 255), cocos2d::ccc3(73, 36, 111)
+                    cocos2d::ccc3(152, 100, 255), cocos2d::ccc3(255, 78, 174),
+                    cocos2d::ccc3(10, 8, 23), cocos2d::ccc3(31, 20, 51),
+                    cocos2d::ccc3(183, 125, 255), cocos2d::ccc3(73, 31, 82)
                 };
-            case 5: // Cyber
+            case 5: // Crystal
                 return {
-                    cocos2d::ccc3(36, 245, 218), cocos2d::ccc3(190, 255, 47),
-                    cocos2d::ccc3(3, 24, 34), cocos2d::ccc3(10, 65, 70),
-                    cocos2d::ccc3(42, 255, 237), cocos2d::ccc3(17, 93, 94)
+                    cocos2d::ccc3(85, 237, 255), cocos2d::ccc3(240, 148, 255),
+                    cocos2d::ccc3(5, 20, 39), cocos2d::ccc3(17, 55, 83),
+                    cocos2d::ccc3(145, 250, 255), cocos2d::ccc3(54, 86, 132)
                 };
-            default: // Neon City
+            default: // Neon 3D
                 return {
-                    cocos2d::ccc3(47, 211, 255), cocos2d::ccc3(202, 77, 255),
-                    cocos2d::ccc3(7, 10, 36), cocos2d::ccc3(20, 28, 69),
-                    cocos2d::ccc3(57, 235, 255), cocos2d::ccc3(39, 27, 91)
+                    cocos2d::ccc3(47, 225, 255), cocos2d::ccc3(205, 82, 255),
+                    cocos2d::ccc3(5, 10, 31), cocos2d::ccc3(18, 28, 63),
+                    cocos2d::ccc3(71, 242, 255), cocos2d::ccc3(47, 32, 94)
                 };
         }
+    }
+
+    int threeDStyleBase(int style) {
+        // Each family contains 3DL Top Left, Top Middle, Half Top Middle,
+        // Top Right, Inner Corner, Outer Corner, Half Top Left and slopes.
+        static constexpr int bases[] = {506, 515, 524, 569, 542, 596};
+        return bases[std::clamp(style, 0, 5)];
     }
 
     void setStaticColorChannel(
@@ -1062,11 +1071,58 @@ namespace {
         return true;
     }
 
+    bool findFreePaletteChannels(
+        LevelEditorLayer* editor,
+        int& primaryChannel,
+        int& accentChannel
+    ) {
+        if (!editor || !editor->m_objects) return false;
+
+        std::unordered_set<int> used;
+        const unsigned int count = editor->m_objects->count();
+        for (unsigned int i = 0; i < count; ++i) {
+            auto* object = static_cast<GameObject*>(editor->m_objects->objectAtIndex(i));
+            if (!object) continue;
+
+            if (object->m_baseColor && object->m_baseColor->m_colorID > 0 &&
+                object->m_baseColor->m_colorID <= 999) {
+                used.insert(object->m_baseColor->m_colorID);
+            }
+            if (object->m_detailColor && object->m_detailColor->m_colorID > 0 &&
+                object->m_detailColor->m_colorID <= 999) {
+                used.insert(object->m_detailColor->m_colorID);
+            }
+            if (object->isColorTrigger()) {
+                const int target = object->getColorIndex();
+                if (target > 0 && target <= 999) used.insert(target);
+
+                auto* trigger = static_cast<EffectGameObject*>(object);
+                if (trigger->m_copyColorID > 0 && trigger->m_copyColorID <= 999) {
+                    used.insert(trigger->m_copyColorID);
+                }
+            }
+        }
+
+        primaryChannel = 0;
+        accentChannel = 0;
+        for (int id = 999; id >= 1; --id) {
+            if (used.count(id)) continue;
+            if (primaryChannel == 0) primaryChannel = id;
+            else {
+                accentChannel = id;
+                break;
+            }
+        }
+        return primaryChannel > 0 && accentChannel > 0;
+    }
+
     void applyObjectChannels(
         GameObject* object,
         int primary,
         int secondary,
-        GeneratorPalette const* palette = nullptr
+        GeneratorPalette const* palette = nullptr,
+        int primaryPaletteChannel = 1,
+        int accentPaletteChannel = 2
     ) {
         if (!object) return;
 
@@ -1082,8 +1138,8 @@ namespace {
         }
 
         if (palette) {
-            const auto& mainRGB = (primary == 1) ? palette->primary : palette->accent;
-            const auto& detailRGB = (secondary == 1) ? palette->primary : palette->accent;
+            const auto& mainRGB = (primary == primaryPaletteChannel) ? palette->primary : palette->accent;
+            const auto& detailRGB = (secondary == primaryPaletteChannel) ? palette->primary : palette->accent;
             object->setObjectColor(mainRGB);
             if (object->m_colorSprite) {
                 object->setChildColor(detailRGB);
@@ -1301,7 +1357,9 @@ namespace {
         std::vector<GeneratedObject> const& objects,
         std::string& error,
         bool recordAnchors,
-        GeneratorPalette const* palette = nullptr
+        GeneratorPalette const* palette = nullptr,
+        int primaryPaletteChannel = 1,
+        int accentPaletteChannel = 2
     ) {
         if (!editor) {
             error = "Open an empty level in the Geometry Dash editor first.";
@@ -1345,7 +1403,8 @@ namespace {
                 }
                 if (spec.primaryColor > 0) {
                     applyObjectChannels(
-                        object, spec.primaryColor, spec.secondaryColor, palette
+                        object, spec.primaryColor, spec.secondaryColor, palette,
+                        primaryPaletteChannel, accentPaletteChannel
                     );
                 }
                 if (recordAnchors && spec.anchor && object->m_uniqueID > 0) {
@@ -1445,133 +1504,222 @@ namespace {
         return true;
     }
 
-    bool autoDecorateGeneratedLayout(
+    LevelEditorLayer* g_decoratedEditor = nullptr;
+    int g_decoratedStyle = -1;
+
+    bool autoDecorateCurrentLevel(
         LevelEditorLayer* editor,
-        int theme,
+        int style,
         std::string& error,
         size_t& decorationCount
     ) {
         decorationCount = 0;
-        if (!editor || editor != g_generatedEditor || g_generatedAnchorIDs.empty()) {
-            error = "Generate a layout FIRST in this same empty level. Auto Deco only decorates a layout created by this tool.";
+        if (!editor || !editor->m_objects || editor->m_objects->count() == 0) {
+            error = "Open a level that already has blocks or spikes, or generate a layout first.";
             return false;
         }
-        if (g_generatedDecorated) {
-            error = "This generated layout is already decorated. Generate a fresh layout to try another theme.";
+        if (g_decoratedEditor == editor) {
+            error = "This editor session has already been decorated. Reopen the level or undo the previous deco before applying another style.";
             return false;
         }
 
-        const GeneratorPalette palette = paletteForTheme(theme);
-        applyGeneratorPalette(editor, theme);
+        const GeneratorPalette palette = paletteForTheme(style);
+        const int threeDBase = threeDStyleBase(style);
+        const bool isGeneratedLevel =
+            editor == g_generatedEditor && !g_generatedAnchorIDs.empty();
 
-        // Custom channels (1 and 2) need real Color Trigger records so they
-        // survive saving/reopening and are active during normal gameplay.
-        if (!addStaticPaletteTrigger(editor, 1, palette.primary, 20.f) ||
-            !addStaticPaletteTrigger(editor, 2, palette.accent, 45.f)) {
-            error = "Could not create the two static palette Color Triggers.";
+        // Keep the user's own level settings intact. Only a level created by
+        // this generator receives the matching background/ground palette.
+        if (isGeneratedLevel) {
+            applyGeneratorPalette(editor, style);
+        }
+
+        int primaryChannel = 0;
+        int accentChannel = 0;
+        if (!findFreePaletteChannels(editor, primaryChannel, accentChannel)) {
+            error = "No two free custom color channels are available. The existing level palette was left unchanged.";
             return false;
+        }
+
+        // These are new free channels, not channels 1/2. The source level's
+        // existing colors and color-trigger animations remain untouched.
+        if (!addStaticPaletteTrigger(editor, primaryChannel, palette.primary, 20.f) ||
+            !addStaticPaletteTrigger(editor, accentChannel, palette.accent, 45.f)) {
+            error = "Could not create the new style color triggers. No gameplay objects were changed.";
+            return false;
+        }
+
+        struct BlockTile {
+            GameObject* object = nullptr;
+            cocos2d::CCPoint position;
+            int gridX = 0;
+            int gridY = 0;
+        };
+
+        std::vector<BlockTile> blocks;
+        std::vector<GameObject*> hazards;
+        std::vector<GameObject*> saws;
+        const unsigned int objectCount = editor->m_objects->count();
+        blocks.reserve(std::min<unsigned int>(objectCount, 20000));
+
+        for (unsigned int i = 0; i < objectCount; ++i) {
+            auto* object = static_cast<GameObject*>(editor->m_objects->objectAtIndex(i));
+            if (!object || !isAnchorBlock(object)) continue;
+
+            const auto position = object->getPosition();
+            if (object->m_objectType == GameObjectType::Solid ||
+                object->m_objectType == GameObjectType::Breakable) {
+                blocks.push_back({
+                    object,
+                    position,
+                    static_cast<int>(std::lround(position.x / 30.f)),
+                    static_cast<int>(std::lround(position.y / 30.f))
+                });
+            } else if (object->m_objectType == GameObjectType::Hazard ||
+                       object->m_objectType == GameObjectType::AnimatedHazard) {
+                if (object->m_objectID == 88 || object->m_objectID == 89 ||
+                    object->m_objectID == 98) {
+                    saws.push_back(object);
+                } else {
+                    hazards.push_back(object);
+                }
+            }
+        }
+
+        if (blocks.empty() && hazards.empty() && saws.empty()) {
+            error = "No regular blocks, spikes or saws were found. The level was not decorated.";
+            return false;
+        }
+
+        // Build a tile map so the 3DL pieces form connected top edges instead
+        // of being stamped randomly over every object.
+        std::unordered_set<uint64_t> occupiedTiles;
+        occupiedTiles.reserve(blocks.size() * 2);
+        for (auto const& block : blocks) {
+            occupiedTiles.insert(spatialKey(block.gridX, block.gridY));
         }
 
         std::vector<GeneratedObject> decorations;
-        decorations.reserve(g_generatedAnchorIDs.size() * 2 + 120);
+        decorations.reserve(blocks.size() + hazards.size() + saws.size() + 96);
 
-        const std::vector<int> themeAssets = [&]() {
-            switch (theme) {
-                case 1: return std::vector<int>{123, 124, 126, 85, 86, 18, 20};
-                case 2: return std::vector<int>{48, 49, 53, 54, 85, 18, 21};
-                case 3: return std::vector<int>{129, 130, 131, 123, 126, 52, 53};
-                case 4: return std::vector<int>{50, 53, 54, 85, 86, 48, 190};
-                case 5: return std::vector<int>{15, 16, 17, 85, 86, 87, 157, 159};
-                default: return std::vector<int>{50, 51, 53, 85, 86, 18, 20};
-            }
-        }();
+        auto addStyledPiece = [&](int id, cocos2d::CCPoint position,
+                                  float scaleX, float scaleY, uint8_t opacity,
+                                  float rotation = 0.f) {
+            pushGenerated(decorations, id, position.x, position.y, false, rotation);
+            auto& piece = decorations.back();
+            piece.decoration = true;
+            piece.scaleX = scaleX;
+            piece.scaleY = scaleY;
+            piece.primaryColor = primaryChannel;
+            piece.secondaryColor = accentChannel;
+            piece.opacity = opacity;
+        };
 
-        size_t anchorIndex = 0;
-        for (int uniqueID : g_generatedAnchorIDs) {
-            auto* anchor = editor->findGameObject(uniqueID);
-            if (!anchor) continue;
+        // Add authentic Geometry Dash 3DL edge pieces to exposed tops of
+        // block runs. Each row uses a left cap, middle segment and right cap.
+        for (auto const& block : blocks) {
+            const auto keyAt = [&](int x, int y) {
+                return spatialKey(x, y);
+            };
+            const bool hasLeft = occupiedTiles.count(keyAt(block.gridX - 1, block.gridY)) > 0;
+            const bool hasRight = occupiedTiles.count(keyAt(block.gridX + 1, block.gridY)) > 0;
+            const bool hasAbove = occupiedTiles.count(keyAt(block.gridX, block.gridY + 1)) > 0;
+            if (hasAbove) continue;
 
-            applyObjectChannels(anchor, 1, 2, &palette);
-            const auto pos = anchor->getPosition();
-            const int asset = themeAssets[anchorIndex % themeAssets.size()];
-            const float smallScale = (asset >= 123 && asset <= 131) ? 0.55f : 0.38f;
-
-            if (anchor->m_objectID == 8) {
-                pushGenerated(decorations, asset, pos.x, pos.y + 27.f, false, 0.f);
-                decorations.back().decoration = true;
-                decorations.back().scaleX = smallScale;
-                decorations.back().scaleY = smallScale;
-                decorations.back().primaryColor = 2;
-                decorations.back().secondaryColor = 1;
-                decorations.back().opacity = 220;
-            } else if (anchor->m_objectID == 88 || anchor->m_objectID == 89 || anchor->m_objectID == 98) {
-                pushGenerated(decorations, 85, pos.x, pos.y + 34.f, false, 0.f);
-                decorations.back().decoration = true;
-                decorations.back().scaleX = 0.42f;
-                decorations.back().scaleY = 0.42f;
-                decorations.back().primaryColor = 2;
-                decorations.back().secondaryColor = 1;
-                decorations.back().opacity = 210;
-            } else {
-                pushGenerated(decorations, asset, pos.x - 18.f, pos.y + 24.f, false, 0.f);
-                decorations.back().decoration = true;
-                decorations.back().scaleX = smallScale;
-                decorations.back().scaleY = smallScale;
-                decorations.back().primaryColor = 2;
-                decorations.back().secondaryColor = 1;
-                decorations.back().opacity = 220;
-
-                if (anchorIndex % 2 == 0) {
-                    const int accentAsset = themeAssets[(anchorIndex + 3) % themeAssets.size()];
-                    pushGenerated(decorations, accentAsset, pos.x + 18.f, pos.y + 25.f, false, 45.f);
-                    decorations.back().decoration = true;
-                    decorations.back().scaleX = 0.30f;
-                    decorations.back().scaleY = 0.30f;
-                    decorations.back().primaryColor = 1;
-                    decorations.back().secondaryColor = 2;
-                    decorations.back().opacity = 205;
-                }
-            }
-            ++anchorIndex;
+            int edgeID = threeDBase + 2; // half top edge for a lone tile
+            if (!hasLeft && hasRight) edgeID = threeDBase;
+            else if (hasLeft && hasRight) edgeID = threeDBase + 1;
+            else if (hasLeft && !hasRight) edgeID = threeDBase + 3;
+            addStyledPiece(edgeID, block.position, 1.f, 1.f, 205);
         }
 
-        // Backdrop ornaments form a visual rhythm behind the playable route.
-        for (float x = 300.f; x < 8200.f; x += 430.f) {
-            const int cloudID = (theme == 3 || theme == 2) ? 49 : 48;
-            const int cloudRow = static_cast<int>((x / 430.f)) % 3;
-            const float cloudY = 340.f + static_cast<float>(cloudRow) * 18.f;
-            pushGenerated(decorations, cloudID, x, cloudY);
-            decorations.back().decoration = true;
-            decorations.back().scaleX = 0.75f;
-            decorations.back().scaleY = 0.75f;
-            decorations.back().primaryColor = 1;
-            decorations.back().secondaryColor = 2;
-            decorations.back().opacity = 95;
-
-            const int sparkleIDs[] = {50, 53, 54};
-            const int sparkleIndex = static_cast<int>((x / 430.f)) % 3;
-            const float sparkleY = 285.f + static_cast<float>(sparkleIndex) * 16.f;
-            pushGenerated(
-                decorations, sparkleIDs[sparkleIndex],
-                x + 145.f, sparkleY
+        // Spike deco is kept behind/on the spike footprint and does not add
+        // new collision. Use a measured repeating accent, not random assets.
+        for (size_t i = 0; i < hazards.size(); ++i) {
+            auto* hazard = hazards[i];
+            if (!hazard) continue;
+            const auto position = hazard->getPosition();
+            const int spikeDecoID = (i % 3 == 0) ? 18 : 20;
+            addStyledPiece(
+                spikeDecoID,
+                position,
+                0.78f,
+                0.78f,
+                175,
+                hazard->getRotation()
             );
-            decorations.back().decoration = true;
-            decorations.back().scaleX = 0.32f;
-            decorations.back().scaleY = 0.32f;
-            decorations.back().primaryColor = 2;
-            decorations.back().secondaryColor = 1;
-            decorations.back().opacity = 150;
+        }
+
+        // Gear accents complement existing saws without changing the saws.
+        for (size_t i = 0; i < saws.size(); ++i) {
+            auto* saw = saws[i];
+            if (!saw) continue;
+            const auto position = saw->getPosition();
+            addStyledPiece(
+                (i % 2 == 0) ? 86 : 87,
+                position,
+                0.42f,
+                0.42f,
+                155,
+                saw->getRotation()
+            );
+        }
+
+        // Small air-deco motifs follow the level's actual block locations.
+        // Every fifth block gets one accent at a fixed offset, leaving the
+        // direct player path and all hitboxes untouched.
+        for (size_t i = 3; i < blocks.size(); i += 5) {
+            const auto position = blocks[i].position;
+            const int accentID = (style % 2 == 0) ? 53 : 54;
+            addStyledPiece(
+                accentID,
+                {position.x + 52.f, position.y + 62.f},
+                0.30f,
+                0.30f,
+                125
+            );
+        }
+
+        // A sparse, fixed skyline gives longer parts a sense of depth. It is
+        // placed above the route and uses low opacity to preserve readability.
+        if (!blocks.empty()) {
+            float minX = blocks.front().position.x;
+            float maxX = minX;
+            for (auto const& block : blocks) {
+                minX = std::min(minX, block.position.x);
+                maxX = std::max(maxX, block.position.x);
+            }
+            const int skylineAsset = (style == 3) ? 113 : ((style == 4) ? 49 : 48);
+            for (float x = minX + 360.f; x < maxX; x += 720.f) {
+                addStyledPiece(
+                    skylineAsset,
+                    {x, 350.f + static_cast<float>((static_cast<int>(x / 720.f) % 2) * 18)},
+                    0.70f,
+                    0.70f,
+                    72
+                );
+            }
         }
 
         if (decorations.empty()) {
-            error = "No generated blocks or spikes were found to decorate.";
+            error = "No suitable objects were found for the selected 3D decoration style.";
+            return false;
+        }
+        if (decorations.size() > 20000) {
+            error = "This level is too large for one automatic deco pass. Split the level into sections and apply the style separately.";
             return false;
         }
 
-        if (!insertGeneratedBatch(editor, decorations, error, false, &palette)) return false;
+        if (!insertGeneratedBatch(
+                editor, decorations, error, false, &palette,
+                primaryChannel, accentChannel
+            )) {
+            return false;
+        }
 
         decorationCount = decorations.size();
-        g_generatedDecorated = true;
+        g_decoratedEditor = editor;
+        g_decoratedStyle = style;
         editor->updateLevelColors();
         return true;
     }
@@ -2106,7 +2254,7 @@ namespace {
 
 class AutoLevelPopup final : public geode::Popup {
 protected:
-    int m_difficulty = 0;
+    int m_difficulty = 5;
     int m_layoutStyle = 0;
     int m_theme = 0;
     cocos2d::CCLabelBMFont* m_difficultyLabel = nullptr;
@@ -2122,7 +2270,7 @@ protected:
         "Classic Flow", "Orb Flow", "Tech Steps", "Wave Corridors", "Sync Pattern", "Mixed Adventure"
     };
     static constexpr const char* themeNames[] = {
-        "Neon City", "Inferno", "Ice Crystal", "Emerald Forest", "Galaxy", "Cyber"
+        "Neon 3D", "Grid Circuit 3D", "Beveled Glass", "Industrial Metal", "Dark Void 3D", "Crystal 3D"
     };
 
     ~AutoLevelPopup() override {
@@ -2156,14 +2304,14 @@ protected:
             m_layoutLabel->setString(text.c_str());
         }
         if (m_themeLabel) {
-            const std::string text = std::string("DECO THEME: ") + themeNames[m_theme];
+            const std::string text = std::string("BLOCK STYLE: ") + themeNames[m_theme];
             m_themeLabel->setString(text.c_str());
         }
     }
 
     bool init() override {
-        constexpr float popupWidth = 430.f;
-        constexpr float popupHeight = 390.f;
+        constexpr float popupWidth = 450.f;
+        constexpr float popupHeight = 430.f;
         if (!geode::Popup::init(popupWidth, popupHeight)) return false;
 
         const auto winSize = CCDirector::get()->getWinSize();
@@ -2174,7 +2322,7 @@ protected:
         );
         m_mainLayer->setScale(std::clamp(fitScale, 0.46f, 0.78f));
 
-        this->setTitle("LEVEL GENERATOR + AUTO DECO", "goldFont.fnt", 0.48f, 22.f);
+        this->setTitle("LEVEL GENERATOR + 3D AUTO DECO", "goldFont.fnt", 0.46f, 22.f);
         if (m_closeBtn) {
             const auto size = m_mainLayer->getContentSize();
             m_closeBtn->setPosition({size.width - 17.f, size.height - 17.f});
@@ -2190,56 +2338,65 @@ protected:
             return label;
         };
 
-        m_difficultyLabel = makeOptionLabel("DIFFICULTY: Easy", 103.f);
-        m_layoutLabel = makeOptionLabel("LAYOUT: Classic Flow", 53.f);
-        m_themeLabel = makeOptionLabel("DECO THEME: Neon City", 3.f);
+        m_difficultyLabel = makeOptionLabel("DIFFICULTY: Easy Demon", 123.f);
+        m_layoutLabel = makeOptionLabel("LAYOUT: Classic Flow", 67.f);
+        m_themeLabel = makeOptionLabel("BLOCK STYLE: Neon 3D", 11.f);
         if (!m_difficultyLabel || !m_layoutLabel || !m_themeLabel) return false;
 
         const float leftX = popupWidth / 2.f - 145.f;
         const float rightX = popupWidth / 2.f + 145.f;
 
-        if (!makeArrow("<", menu_selector(AutoLevelPopup::onDifficultyPrev), leftX, popupHeight / 2.f + 103.f)) return false;
+        if (!makeArrow("<", menu_selector(AutoLevelPopup::onDifficultyPrev), leftX, popupHeight / 2.f + 123.f)) return false;
         if (!makeArrow(">", menu_selector(AutoLevelPopup::onDifficultyNext), rightX, popupHeight / 2.f + 103.f)) return false;
-        if (!makeArrow("<", menu_selector(AutoLevelPopup::onLayoutPrev), leftX, popupHeight / 2.f + 53.f)) return false;
+        if (!makeArrow("<", menu_selector(AutoLevelPopup::onLayoutPrev), leftX, popupHeight / 2.f + 67.f)) return false;
         if (!makeArrow(">", menu_selector(AutoLevelPopup::onLayoutNext), rightX, popupHeight / 2.f + 53.f)) return false;
-        if (!makeArrow("<", menu_selector(AutoLevelPopup::onThemePrev), leftX, popupHeight / 2.f + 3.f)) return false;
+        if (!makeArrow("<", menu_selector(AutoLevelPopup::onThemePrev), leftX, popupHeight / 2.f + 11.f)) return false;
         if (!makeArrow(">", menu_selector(AutoLevelPopup::onThemeNext), rightX, popupHeight / 2.f + 3.f)) return false;
 
         auto* generateButton = CCMenuItemSpriteExtra::create(
-            ButtonSprite::create("1. GENERATE LAYOUT", "goldFont.fnt", "GJ_button_01.png", 0.62f),
+            ButtonSprite::create("1. GENERATE LAYOUT", "goldFont.fnt", "GJ_button_01.png", 0.58f),
             this,
             menu_selector(AutoLevelPopup::onGenerateLayout)
         );
         if (!generateButton) return false;
-        generateButton->setPosition({popupWidth / 2.f - 104.f, popupHeight / 2.f - 65.f});
+        generateButton->setPosition({popupWidth / 2.f - 112.f, popupHeight / 2.f - 65.f});
         m_buttonMenu->addChild(generateButton);
 
         auto* decoButton = CCMenuItemSpriteExtra::create(
-            ButtonSprite::create("2. AUTO DECO", "goldFont.fnt", "GJ_button_02.png", 0.62f),
+            ButtonSprite::create("2. DECO THIS LEVEL", "goldFont.fnt", "GJ_button_02.png", 0.54f),
             this,
             menu_selector(AutoLevelPopup::onAutoDeco)
         );
         if (!decoButton) return false;
-        decoButton->setPosition({popupWidth / 2.f + 104.f, popupHeight / 2.f - 65.f});
+        decoButton->setPosition({popupWidth / 2.f + 112.f, popupHeight / 2.f - 65.f});
         m_buttonMenu->addChild(decoButton);
 
+        auto* transferButton = CCMenuItemSpriteExtra::create(
+            ButtonSprite::create("3. SOURCE STYLE (F4)", "goldFont.fnt", "GJ_button_03.png", 0.56f),
+            this,
+            menu_selector(AutoLevelPopup::onStyleTransfer)
+        );
+        if (!transferButton) return false;
+        transferButton->setPosition({popupWidth / 2.f, popupHeight / 2.f - 119.f});
+        m_buttonMenu->addChild(transferButton);
+
         auto* hint = cocos2d::CCLabelBMFont::create(
-            "Create layout first. Auto Deco only works after a successful layout.",
+            "Auto Deco works on your own layout too. F4 copies a style from another level.",
             "chatFont.fnt"
         );
         if (!hint) return false;
         hint->setScale(0.36f);
         hint->limitLabelWidth(380.f, 0.36f, 0.18f);
-        m_mainLayer->addChildAtPosition(hint, geode::Anchor::Center, {0.f, -103.f});
+        m_mainLayer->addChildAtPosition(hint, geode::Anchor::Center, {0.f, -145.f});
 
         m_statusLabel = cocos2d::CCLabelBMFont::create(
-            "Open a NEW EMPTY level, choose options, then Generate Layout.",
+            "Open any level to decorate it, or an empty level to generate gameplay.",
             "chatFont.fnt"
         );
         if (!m_statusLabel) return false;
         m_statusLabel->setScale(0.37f);
         m_statusLabel->limitLabelWidth(380.f, 0.37f, 0.18f);
-        m_mainLayer->addChildAtPosition(m_statusLabel, geode::Anchor::Center, {0.f, -143.f});
+        m_mainLayer->addChildAtPosition(m_statusLabel, geode::Anchor::Center, {0.f, -187.f});
 
         refreshOptions();
         return true;
@@ -2321,16 +2478,27 @@ public:
         auto* editor = LevelEditorLayer::get();
         std::string error;
         size_t decorationCount = 0;
-        if (!autoDecorateGeneratedLayout(editor, m_theme, error, decorationCount)) {
+        if (!autoDecorateCurrentLevel(editor, m_theme, error, decorationCount)) {
             this->setStatus(error, true);
             return;
         }
 
         this->setStatus(
-            std::string("AUTO DECO COMPLETE | ") + themeNames[m_theme] +
+            std::string("3D AUTO DECO COMPLETE | ") + themeNames[m_theme] +
             " | " + std::to_string(decorationCount) +
-            " visual deco pieces, custom colors and background palette applied. Gameplay objects were kept."
+            " 3DL / spike / air-deco pieces added. Original gameplay and existing color channels were kept."
         );
+    }
+
+    void onStyleTransfer(cocos2d::CCObject*) {
+        this->onClose(nullptr);
+        if (g_popup) {
+            g_popup->onClose(nullptr);
+        }
+        if (auto* popup = StyleScannerPopup::create()) {
+            g_popup = popup;
+            popup->show();
+        }
     }
 
     void onClose(cocos2d::CCObject* sender) override {
