@@ -1025,13 +1025,9 @@ namespace {
         auto* manager = editor->m_levelSettings->m_effectManager;
         const auto palette = paletteForTheme(theme);
 
-        // Two custom channels are used by every generated block and deco piece.
-        setStaticColorChannel(manager, 1, palette.primary);
-        setStaticColorChannel(manager, 2, palette.accent);
-
-        // Geometry Dash 2.2 reserved visual channels:
-        // 1000 background, 1001 ground, 1002 ground line,
-        // 1009 second ground, 1013/1014 the two middleground layers.
+        // The editor preview is tinted directly by Auto Deco. Channels 1 and 2
+        // are persisted by the two static Color Triggers inserted below.
+        // Geometry Dash saves only reserved channels (>999) in level settings.
         setStaticColorChannel(manager, 1000, palette.background);
         setStaticColorChannel(manager, 1001, palette.ground);
         setStaticColorChannel(manager, 1002, palette.line);
@@ -1039,9 +1035,33 @@ namespace {
         setStaticColorChannel(manager, 1013, palette.middle);
         setStaticColorChannel(manager, 1014, palette.background);
 
-        editor->updateLevelColors();
         editor->levelSettingsUpdated();
         editor->updateLevelColors();
+    }
+
+    bool addStaticPaletteTrigger(
+        LevelEditorLayer* editor,
+        int channelID,
+        cocos2d::ccColor3B color,
+        float x
+    ) {
+        if (!editor || channelID < 1 || channelID > 999) return false;
+
+        auto* base = editor->createObject(899, {x, 105.f}, true);
+        if (!base) return false;
+
+        auto* trigger = static_cast<EffectGameObject*>(base);
+        trigger->m_targetColor = channelID;
+        trigger->m_triggerTargetColor = color;
+        trigger->m_duration = 0.f;
+        trigger->m_opacity = 1.f;
+        trigger->m_usesBlending = true;
+        trigger->m_usesPlayerColor1 = false;
+        trigger->m_usesPlayerColor2 = false;
+        trigger->m_copyColorID = 0;
+        trigger->m_copyOpacity = false;
+        trigger->m_tintGround = false;
+        return true;
     }
 
     void applyObjectChannels(
@@ -1367,6 +1387,14 @@ namespace {
 
         const GeneratorPalette palette = paletteForTheme(theme);
         applyGeneratorPalette(editor, theme);
+
+        // Custom channels (1 and 2) need real Color Trigger records so they
+        // survive saving/reopening and are active during normal gameplay.
+        if (!addStaticPaletteTrigger(editor, 1, palette.primary, 20.f) ||
+            !addStaticPaletteTrigger(editor, 2, palette.accent, 45.f)) {
+            error = "Could not create the two static palette Color Triggers.";
+            return false;
+        }
 
         std::vector<GeneratedObject> decorations;
         decorations.reserve(g_generatedAnchorIDs.size() * 2 + 120);
