@@ -123,7 +123,7 @@ enum class Motif { Ember, Radiant, Candy, Frost, Bolt, Rivet, Circuit };
 enum class Skyline { Pillars, Diamonds, Slabs };
 
 struct Palette {
-    ccColor3B bg, ground, line, far, detail, edge, accent, glow, mote;
+    ccColor3B bg, ground, line, farColor, detail, edge, accent, glow, mote;
 };
 
 struct StyleDef {
@@ -214,7 +214,7 @@ struct ChannelDef {
 
 inline std::array<ChannelDef, kChannelCount> channelDefs(StyleDef const& st) {
     return {{
-        {0, st.pal.far,    st.farOpacity,  false},
+        {0, st.pal.farColor,    st.farOpacity,  false},
         {1, st.pal.glow,   st.glowOpacity, true},
         {2, st.pal.edge,   1.0f,           false},
         {3, st.pal.accent, 1.0f,           false},
@@ -1104,7 +1104,7 @@ private:
             m_infoLabel->setString(text.c_str());
             m_infoLabel->limitLabelWidth(370.f, 0.42f, 0.2f);
         }
-        ccColor3B colours[6] = {st.pal.bg, st.pal.far, st.pal.detail, st.pal.edge, st.pal.accent, st.pal.mote};
+        ccColor3B colours[6] = {st.pal.bg, st.pal.farColor, st.pal.detail, st.pal.edge, st.pal.accent, st.pal.mote};
         for (size_t i = 0; i < m_swatches.size(); ++i) {
             if (m_swatches[i]) m_swatches[i]->setColor(colours[i]);
         }
