@@ -396,7 +396,17 @@ inline Layout analyze(LevelEditorLayer* editor, std::unordered_set<GameObject*> 
         Kind k = classify(obj);
         if (k == Kind::None) continue;
 
-        CCPoint p = obj->getPosition();
+        // getPosition() is the GameObject node anchor, not guaranteed to be
+        // the visible sprite centre. GD block sprites can have a non-centred
+        // anchor/offset, which makes local-space deco float above the face.
+        // getBoundingRect() applies the actual node transform and returns the
+        // visible transformed bounds in object-layer coordinates; its midpoint
+        // is the correct origin for all per-object face decorations.
+        CCRect visualBounds = obj->getBoundingRect();
+        CCPoint p = ccp(
+            visualBounds.origin.x + visualBounds.size.width * 0.5f,
+            visualBounds.origin.y + visualBounds.size.height * 0.5f
+        );
         float sx = std::fabs(obj->getScaleX());
         float sy = std::fabs(obj->getScaleY());
         if (sx < 0.01f) sx = 1.f;
