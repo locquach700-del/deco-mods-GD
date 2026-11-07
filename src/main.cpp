@@ -1091,6 +1091,25 @@ namespace {
         }
     }
 
+    void pushGenerated(
+        std::vector<GeneratedObject>& output,
+        int id,
+        float x,
+        float y,
+        bool anchor = false,
+        float rotation = 0.f
+    ) {
+        GeneratedObject object;
+        object.id = id;
+        object.x = x;
+        object.y = y;
+        object.anchor = anchor;
+        object.rotation = rotation;
+        // The layout is generated before its theme is selected; color IDs
+        // are assigned later by Auto Deco.
+        output.emplace_back(object);
+    }
+
     void addSpikeGroup(
         std::vector<GeneratedObject>& output,
         float x,
