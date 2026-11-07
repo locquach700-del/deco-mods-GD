@@ -5,10 +5,10 @@
     "android": "2.2081"
   },
   "id": "developer.stylescanner",
-  "name": "Style Scanner & Deco Copier",
-  "version": "1.2.2",
+  "name": "Procedural Level Generator & Auto Deco",
+  "version": "1.3.0",
   "developer": "locquach700-del",
-  "description": "Copies matching block and spike decoration, background/ground settings, and static custom color channels used by transferred deco without importing source gameplay or trigger objects.",
+  "description": "Generates original Geometry Dash layouts across ten difficulty tiers and adds themed automatic decoration and background palettes after layout generation.",
   "platforms": [
     "win",
     "android"
