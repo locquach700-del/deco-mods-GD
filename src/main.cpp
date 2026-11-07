@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <iterator>
 #include <random>
 #include <string>
 #include <string_view>
