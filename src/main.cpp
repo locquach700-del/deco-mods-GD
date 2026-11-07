@@ -1029,32 +1029,47 @@ namespace {
         setStaticColorChannel(manager, 1, palette.primary);
         setStaticColorChannel(manager, 2, palette.accent);
 
-        // Geometry Dash's reserved channels tint the background and ground layers.
+        // Geometry Dash 2.2 reserved visual channels:
+        // 1000 background, 1001 ground, 1002 ground line,
+        // 1009 second ground, 1013/1014 the two middleground layers.
         setStaticColorChannel(manager, 1000, palette.background);
         setStaticColorChannel(manager, 1001, palette.ground);
         setStaticColorChannel(manager, 1002, palette.line);
-        setStaticColorChannel(manager, 1003, palette.middle);
-        setStaticColorChannel(manager, 1004, palette.middle);
+        setStaticColorChannel(manager, 1009, palette.ground);
+        setStaticColorChannel(manager, 1013, palette.middle);
+        setStaticColorChannel(manager, 1014, palette.background);
 
         editor->updateLevelColors();
         editor->levelSettingsUpdated();
         editor->updateLevelColors();
     }
 
-    void applyObjectChannels(GameObject* object, int primary, int secondary) {
+    void applyObjectChannels(
+        GameObject* object,
+        int primary,
+        int secondary,
+        GeneratorPalette const* palette = nullptr
+    ) {
         if (!object) return;
 
-        // Newly parsed editor objects may not have their effect-manager link
-        // initialized until the editor refreshes the level palette. Calling
-        // updateMainColor()/updateSecondaryColor() here reaches colorForMode()
-        // too early and can dereference a null manager on Windows.
-        // Assign only the palette channel IDs; updateLevelColors() is called
-        // after the complete batch has been inserted into the editor.
+        // Never call updateMainColor()/colorForMode() on a freshly parsed
+        // editor object. Its effect-manager pointer is not guaranteed to be
+        // initialized yet. Store channel IDs and tint its visible sprites
+        // directly using the selected theme instead.
         if (object->m_baseColor) {
             object->m_baseColor->m_colorID = std::clamp(primary, 0, 1101);
         }
         if (object->m_detailColor) {
             object->m_detailColor->m_colorID = std::clamp(secondary, 0, 1101);
+        }
+
+        if (palette) {
+            const auto& mainRGB = (primary == 1) ? palette->primary : palette->accent;
+            const auto& detailRGB = (secondary == 1) ? palette->primary : palette->accent;
+            object->setObjectColor(mainRGB);
+            if (object->m_colorSprite) {
+                object->setChildColor(detailRGB);
+            }
         }
     }
 
@@ -1076,10 +1091,8 @@ namespace {
         object.y = y;
         object.anchor = anchor;
         object.rotation = rotation;
-        if (anchor) {
-            object.primaryColor = 1;
-            object.secondaryColor = 2;
-        }
+        // The layout is generated before its theme is selected; color IDs
+        // are assigned later by Auto Deco.
         output.emplace_back(object);
     }
 
@@ -1200,7 +1213,8 @@ namespace {
         LevelEditorLayer* editor,
         std::vector<GeneratedObject> const& objects,
         std::string& error,
-        bool recordAnchors
+        bool recordAnchors,
+        GeneratorPalette const* palette = nullptr
     ) {
         if (!editor) {
             error = "Open an empty level in the Geometry Dash editor first.";
@@ -1243,7 +1257,9 @@ namespace {
                     object->setOpacity(spec.opacity);
                 }
                 if (spec.primaryColor > 0) {
-                    applyObjectChannels(object, spec.primaryColor, spec.secondaryColor);
+                    applyObjectChannels(
+                        object, spec.primaryColor, spec.secondaryColor, palette
+                    );
                 }
                 if (recordAnchors && spec.anchor && object->m_uniqueID > 0) {
                     g_generatedAnchorIDs.push_back(object->m_uniqueID);
@@ -1349,6 +1365,7 @@ namespace {
             return false;
         }
 
+        const GeneratorPalette palette = paletteForTheme(theme);
         applyGeneratorPalette(editor, theme);
 
         std::vector<GeneratedObject> decorations;
@@ -1371,7 +1388,7 @@ namespace {
             auto* anchor = editor->findGameObject(uniqueID);
             if (!anchor) continue;
 
-            applyObjectChannels(anchor, 1, 2);
+            applyObjectChannels(anchor, 1, 2, &palette);
             const auto pos = anchor->getPosition();
             const int asset = themeAssets[anchorIndex % themeAssets.size()];
             const float smallScale = (asset >= 123 && asset <= 131) ? 0.55f : 0.38f;
@@ -1444,7 +1461,7 @@ namespace {
             return false;
         }
 
-        if (!insertGeneratedBatch(editor, decorations, error, false)) return false;
+        if (!insertGeneratedBatch(editor, decorations, error, false, &palette)) return false;
 
         decorationCount = decorations.size();
         g_generatedDecorated = true;
