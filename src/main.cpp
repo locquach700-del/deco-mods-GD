@@ -13,7 +13,6 @@
 #include <cstring>
 #include <limits>
 #include <iterator>
-#include <random>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -945,7 +944,6 @@ namespace {
     LevelEditorLayer* g_generatedEditor = nullptr;
     std::vector<int> g_generatedAnchorIDs;
     bool g_generatedDecorated = false;
-    uint32_t g_generatorSeed = 0x51A7E123u;
 
     GeneratorPalette paletteForTheme(int theme) {
         switch (theme) {
@@ -1093,29 +1091,6 @@ namespace {
         }
     }
 
-    int randomInt(std::mt19937& rng, int minimum, int maximum) {
-        return std::uniform_int_distribution<int>(minimum, maximum)(rng);
-    }
-
-    void pushGenerated(
-        std::vector<GeneratedObject>& output,
-        int id,
-        float x,
-        float y,
-        bool anchor = false,
-        float rotation = 0.f
-    ) {
-        GeneratedObject object;
-        object.id = id;
-        object.x = x;
-        object.y = y;
-        object.anchor = anchor;
-        object.rotation = rotation;
-        // The layout is generated before its theme is selected; color IDs
-        // are assigned later by Auto Deco.
-        output.emplace_back(object);
-    }
-
     void addSpikeGroup(
         std::vector<GeneratedObject>& output,
         float x,
@@ -1124,8 +1099,152 @@ namespace {
         float spacing = 30.f,
         float rotation = 0.f
     ) {
+        count = std::clamp(count, 0, 3);
         for (int i = 0; i < count; ++i) {
             pushGenerated(output, 8, x + spacing * i, y, true, rotation);
+        }
+    }
+
+    void addBlockRun(
+        std::vector<GeneratedObject>& output,
+        float x,
+        int count,
+        float y
+    ) {
+        for (int i = 0; i < count; ++i) {
+            pushGenerated(output, 1, x + static_cast<float>(i) * 30.f, y, true);
+        }
+    }
+
+    // A two-block-wide wall leaves a deliberate central flight lane.
+    // Lower walls occupy y=90..150; upper walls occupy y=270..330.
+    void addFlightWall(
+        std::vector<GeneratedObject>& output,
+        float x,
+        bool upper,
+        int width = 2
+    ) {
+        const float firstY = upper ? 285.f : 105.f;
+        addBlockRun(output, x, width, firstY);
+        addBlockRun(output, x, width, firstY + 30.f);
+    }
+
+    int patternSpikeCount(int difficulty, int layoutStyle, int beat) {
+        // Each row is a fixed, authored eight-beat phrase. Zero means a
+        // deliberate rest, so two hazards are never placed back-to-back.
+        static constexpr int phrases[6][8] = {
+            {1, 0, 1, 0, 2, 0, 1, 0}, // Classic Flow
+            {1, 0, 1, 0, 1, 0, 2, 0}, // Orb Flow
+            {1, 0, 2, 0, 1, 0, 1, 0}, // Tech Steps
+            {1, 0, 2, 0, 1, 0, 2, 0}, // Wave Corridors
+            {1, 0, 2, 0, 2, 0, 1, 0}, // Sync Pattern
+            {1, 0, 1, 0, 2, 0, 1, 0}  // Mixed Adventure
+        };
+
+        int count = phrases[std::clamp(layoutStyle, 0, 5)][beat % 8];
+        if (difficulty <= 1) {
+            count = std::min(count, 1);
+        } else if (difficulty <= 4) {
+            count = std::min(count, 2);
+        } else if (difficulty >= 7 && count > 0 && (beat == 2 || beat == 6)) {
+            count = std::min(count + 1, 3);
+        }
+        return count;
+    }
+
+    void addGroundModePattern(
+        std::vector<GeneratedObject>& output,
+        int mode,
+        float startX,
+        int difficulty,
+        int layoutStyle
+    ) {
+        for (int beat = 0; beat < 8; ++beat) {
+            const int count = patternSpikeCount(difficulty, layoutStyle, beat);
+            if (count == 0) continue;
+
+            const float x = startX + 165.f + static_cast<float>(beat) * 88.f;
+            addSpikeGroup(output, x, count);
+
+            // Optional rings sit above the normal jump route. The ground
+            // route remains complete without collecting them.
+            if (layoutStyle == 1 && (beat == 2 || beat == 6)) {
+                pushGenerated(output, (beat == 2) ? 36 : 84, x + 40.f, 205.f);
+            }
+
+            // Tech Steps adds a clear, elevated landing surface after a
+            // hazard, not a randomly floating obstacle.
+            if (layoutStyle == 2 && (beat == 2 || beat == 6)) {
+                addBlockRun(output, x + 100.f, 2, 165.f);
+            }
+
+            // Spider sections get actual overhead surfaces to attach to.
+            if (mode == 6 && (beat == 2 || beat == 6)) {
+                addBlockRun(output, x + 65.f, 3, 315.f);
+            }
+
+            // UFO's rings are optional rewards placed in the clear space
+            // after a spike phrase; they are not needed to survive it.
+            if (mode == 3 && layoutStyle == 1 && beat == 4) {
+                pushGenerated(output, 36, x + 115.f, 215.f);
+            }
+        }
+    }
+
+    void addBallPattern(
+        std::vector<GeneratedObject>& output,
+        float startX,
+        int difficulty
+    ) {
+        // Ball play alternates one readable floor hazard and one ceiling
+        // hazard, leaving a full clear interval between every decision.
+        for (int beat = 0; beat < 4; ++beat) {
+            const float x = startX + 190.f + static_cast<float>(beat) * 185.f;
+            const bool ceiling = (beat % 2) == 1;
+            int count = (difficulty >= 6 && beat == 2) ? 2 : 1;
+            if (difficulty <= 1) count = 1;
+            addSpikeGroup(
+                output,
+                x,
+                count,
+                ceiling ? 315.f : 105.f,
+                30.f,
+                ceiling ? 180.f : 0.f
+            );
+        }
+    }
+
+    void addShipPattern(
+        std::vector<GeneratedObject>& output,
+        float startX,
+        int difficulty,
+        int layoutStyle
+    ) {
+        // Each wall alternates floor / ceiling. The 120-unit opening is the
+        // intended flight lane and there are no extra objects inside it.
+        static constexpr float offsets[4] = {205.f, 385.f, 565.f, 745.f};
+        for (int beat = 0; beat < 4; ++beat) {
+            const bool upper = ((beat + (layoutStyle == 5 ? 1 : 0)) % 2) == 1;
+            const int wallWidth = (difficulty >= 8 && beat == 2) ? 3 : 2;
+            addFlightWall(output, startX + offsets[beat], upper, wallWidth);
+        }
+    }
+
+    void addWavePattern(
+        std::vector<GeneratedObject>& output,
+        float startX,
+        int difficulty,
+        int layoutStyle
+    ) {
+        // Wave corridors use alternating openings. Every column is built
+        // from a small, aligned stack of blocks, never scattered objects.
+        static constexpr float offsets[5] = {
+            155.f, 305.f, 455.f, 605.f, 755.f
+        };
+        for (int beat = 0; beat < 5; ++beat) {
+            const bool upper = ((beat + (layoutStyle == 4 ? 1 : 0)) % 2) == 1;
+            const int wallWidth = (difficulty >= 8 && beat == 2) ? 3 : 2;
+            addFlightWall(output, startX + offsets[beat], upper, wallWidth);
         }
     }
 
@@ -1134,99 +1253,28 @@ namespace {
         int mode,
         float startX,
         float endX,
-        float step,
         int difficulty,
-        int layoutStyle,
-        std::mt19937& rng
+        int layoutStyle
     ) {
-        const int maxSpikeGroup = std::clamp(1 + difficulty / 3, 1, 4);
-        const int orbChance = std::clamp(18 + difficulty * 4 + (layoutStyle == 1 ? 18 : 0), 18, 72);
-        int beat = 0;
+        (void)endX;
 
-        for (float x = startX + 135.f; x < endX - 65.f; x += step) {
-            ++beat;
-            const int group = randomInt(rng, 1, maxSpikeGroup);
-            const bool addSaw = randomInt(rng, 0, 99) < (8 + difficulty * 3 + (layoutStyle == 2 ? 12 : 0));
-            const bool addOrb = randomInt(rng, 0, 99) < orbChance;
-            const bool addPlatform = randomInt(rng, 0, 99) < (14 + difficulty * 3 + (layoutStyle == 2 ? 18 : 0));
-
-            if (mode == 1) { // Ship: keep a visible flight lane between floor and ceiling.
-                if (beat % 2 == 0) addSpikeGroup(output, x, group, 105.f, 30.f);
-                if (beat % 3 == 0) addSpikeGroup(output, x + 35.f, 1, 285.f, 30.f, 180.f);
-                if (beat % 2 == 0) {
-                    pushGenerated(output, 1, x + 100.f, 315.f, true);
-                }
-                if (addSaw) pushGenerated(output, 89, x + 45.f, 205.f, true);
-                continue;
-            }
-
-            if (mode == 4) { // Wave: alternate upper/lower blockers to create a readable zig-zag lane.
-                const bool upper = (beat % 2) == 0;
-                pushGenerated(output, 1, x, upper ? 235.f : 165.f, true);
-                if (difficulty >= 5 && beat % 3 == 0) {
-                    pushGenerated(output, 1, x + 45.f, upper ? 165.f : 235.f, true);
-                }
-                if (beat % 2 == 0) addSpikeGroup(output, x + 90.f, 1, 105.f);
-                continue;
-            }
-
-            if (mode == 6 || mode == 7) { // Spider / Swing: staggered platforms with open gaps.
-                if (addPlatform || beat % 2 == 0) {
-                    const float platformY = (beat % 2 == 0) ? 165.f : 225.f;
-                    pushGenerated(output, 1, x, platformY, true);
-                    pushGenerated(output, 1, x + 30.f, platformY, true);
-                    if (difficulty >= 6 && beat % 3 == 0) {
-                        addSpikeGroup(output, x + 30.f, 1, platformY + 30.f);
-                    }
-                }
-                if (addSaw) pushGenerated(output, 98, x + 95.f, 180.f, true);
-                if (addOrb) pushGenerated(output, (beat % 2) ? 36 : 141, x + 55.f, 255.f);
-                continue;
-            }
-
-            // Cube, Ball, UFO and Robot sections.
-            if (mode == 0 || mode == 2 || mode == 3 || mode == 5) {
-                if (mode == 3 && beat % 2 == 0) {
-                    pushGenerated(output, 35, x, 105.f);
-                } else {
-                    addSpikeGroup(output, x, group);
-                }
-
-                if (addPlatform) {
-                    const float py = (beat % 2 == 0) ? 165.f : 195.f;
-                    pushGenerated(output, 1, x + 105.f, py, true);
-                    if (difficulty >= 4) {
-                        pushGenerated(output, 1, x + 135.f, py, true);
-                    }
-                }
-
-                if (addSaw) {
-                    pushGenerated(output, (beat % 2 == 0) ? 88 : 89, x + 115.f, 165.f, true);
-                }
-
-                if (addOrb) {
-                    const int orbIDs[] = {36, 84, 141, 1022, 1330, 1333};
-                    pushGenerated(output, orbIDs[randomInt(rng, 0, 5)], x + 45.f, 190.f + randomInt(rng, 0, 40));
-                }
-
-                if (layoutStyle == 1 && beat % 3 == 0) {
-                    pushGenerated(output, 140, x + 145.f, 105.f);
-                    pushGenerated(output, 36, x + 205.f, 205.f);
-                } else if (layoutStyle == 4 && beat % 4 == 0) {
-                    pushGenerated(output, 67, x + 120.f, 105.f);
-                    pushGenerated(output, 84, x + 185.f, 215.f);
-                }
-
-                if (mode == 2 && beat % 3 == 0) {
-                    pushGenerated(output, 10, x + 170.f, 105.f);
-                    pushGenerated(output, 11, x + 250.f, 105.f);
-                }
-
-                if (mode == 5 && beat % 2 == 0) {
-                    pushGenerated(output, 143, x + 70.f, 165.f, true);
-                }
-            }
+        if (mode == 1 || mode == 7) {
+            addShipPattern(output, startX, difficulty, layoutStyle);
+            return;
         }
+        if (mode == 2) {
+            addBallPattern(output, startX, difficulty);
+            return;
+        }
+        if (mode == 4) {
+            addWavePattern(output, startX, difficulty, layoutStyle);
+            return;
+        }
+
+        // Cube, UFO, Robot and Spider sections share a grounded, readable
+        // spike phrase. Mode-specific surfaces and optional rings are added
+        // only at marked beats.
+        addGroundModePattern(output, mode, startX, difficulty, layoutStyle);
     }
 
     bool insertGeneratedBatch(
@@ -1313,13 +1361,20 @@ namespace {
         g_generatedEditor = nullptr;
         g_generatedDecorated = false;
 
-        std::mt19937 rng(++g_generatorSeed);
         std::vector<GeneratedObject> objects;
-        objects.reserve(1800);
+        objects.reserve(900);
 
-        const float step = std::max(125.f, 300.f - static_cast<float>(difficulty) * 17.f);
-        struct ModeSpan { int portal; float start; float end; int mode; };
-        const ModeSpan spans[] = {
+        struct ModeSpan {
+            int portal;
+            float start;
+            float end;
+            int mode;
+        };
+
+        // Each mode gets its own 900-unit section, one entry portal, and a
+        // clean return to Cube before the next mode. The player starts with
+        // a safe runway and every section begins with a clear lead-in.
+        static constexpr ModeSpan spans[] = {
             {0,    120.f, 1000.f, 0},   // Cube
             {13,  1100.f, 2000.f, 1},   // Ship
             {47,  2100.f, 3100.f, 2},   // Ball
@@ -1330,32 +1385,34 @@ namespace {
             {1933,7200.f, 8100.f, 7}    // Swing
         };
 
-        // Add the eight common game modes in separate, readable sections.
         for (size_t i = 0; i < std::size(spans); ++i) {
-            auto const& span = spans[i];
-            if (span.portal != 0) pushGenerated(objects, span.portal, span.start, 105.f);
+            const auto& span = spans[i];
+
+            if (span.portal != 0) {
+                pushGenerated(objects, span.portal, span.start, 105.f);
+            }
+
             addModePattern(
-                objects, span.mode, span.start, span.end, step,
-                difficulty, layoutStyle, rng
+                objects,
+                span.mode,
+                span.start,
+                span.end,
+                difficulty,
+                layoutStyle
             );
+
             if (i + 1 < std::size(spans)) {
-                pushGenerated(objects, 12, span.end + 20.f, 105.f); // return to Cube
+                pushGenerated(objects, 12, span.end + 20.f, 105.f);
             }
         }
+
+        // End with a normal Cube portal after Swing. No speed or gravity
+        // triggers are injected, so the generated route keeps predictable
+        // default movement physics.
         pushGenerated(objects, 12, 8140.f, 105.f);
 
-        // Vary speed, size and gravity as normal gameplay ingredients.
-        pushGenerated(objects, 200, 500.f, 105.f);
-        pushGenerated(objects, 201, 760.f, 105.f);
-        if (difficulty >= 3) pushGenerated(objects, 202, 3750.f, 105.f);
-        if (difficulty >= 7) pushGenerated(objects, 203, 6800.f, 105.f);
-        if (difficulty >= 4) {
-            pushGenerated(objects, 99, 2750.f, 105.f);
-            pushGenerated(objects, 101, 3000.f, 105.f);
-        }
-
         if (objects.size() > 12000) {
-            error = "The generated layout exceeded the safe object limit. Choose a shorter or easier generation profile.";
+            error = "The designed layout exceeded the safe object limit.";
             return false;
         }
 
@@ -1398,7 +1455,6 @@ namespace {
 
         std::vector<GeneratedObject> decorations;
         decorations.reserve(g_generatedAnchorIDs.size() * 2 + 120);
-        std::mt19937 rng(++g_generatorSeed);
 
         const std::vector<int> themeAssets = [&]() {
             switch (theme) {
@@ -1463,7 +1519,9 @@ namespace {
         // Backdrop ornaments form a visual rhythm behind the playable route.
         for (float x = 300.f; x < 8200.f; x += 430.f) {
             const int cloudID = (theme == 3 || theme == 2) ? 49 : 48;
-            pushGenerated(decorations, cloudID, x, 355.f + randomInt(rng, -25, 35));
+            const int cloudRow = static_cast<int>((x / 430.f)) % 3;
+            const float cloudY = 340.f + static_cast<float>(cloudRow) * 18.f;
+            pushGenerated(decorations, cloudID, x, cloudY);
             decorations.back().decoration = true;
             decorations.back().scaleX = 0.75f;
             decorations.back().scaleY = 0.75f;
@@ -1472,9 +1530,11 @@ namespace {
             decorations.back().opacity = 95;
 
             const int sparkleIDs[] = {50, 53, 54};
+            const int sparkleIndex = static_cast<int>((x / 430.f)) % 3;
+            const float sparkleY = 285.f + static_cast<float>(sparkleIndex) * 16.f;
             pushGenerated(
-                decorations, sparkleIDs[randomInt(rng, 0, 2)],
-                x + 145.f, 295.f + randomInt(rng, -25, 30)
+                decorations, sparkleIDs[sparkleIndex],
+                x + 145.f, sparkleY
             );
             decorations.back().decoration = true;
             decorations.back().scaleX = 0.32f;
