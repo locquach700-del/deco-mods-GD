@@ -241,7 +241,7 @@ public:
 private:
     Controller() = default;
 
-    ghc::filesystem::path macroPath() const {
+    auto macroPath() const {
         return Mod::get()->getSaveDir() / "last-trial.apl";
     }
 
