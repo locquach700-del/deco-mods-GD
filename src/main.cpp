@@ -15,6 +15,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 using namespace geode::prelude;
@@ -22,7 +23,8 @@ using namespace geode::prelude;
 class StyleScannerPopup;
 
 namespace {
-    constexpr std::string_view kCodeMagic = "STY4";
+    constexpr std::string_view kCodeMagic = "STY5";
+    constexpr std::string_view kPreviousCodeMagicV4 = "STY4";
     constexpr std::string_view kPreviousTemplateMagic = "STY3";
     constexpr std::string_view kPreviousCodeMagic = "STY2";
     constexpr std::string_view kLegacyCodeMagic = "STY1";
@@ -52,6 +54,17 @@ namespace {
         std::vector<DecoItem> items;
     };
 
+    // A static snapshot of a custom color channel used by copied decoration.
+    // Color Trigger objects themselves are never exported or imported.
+    struct PaletteColor {
+        uint32_t channelID = 0;
+        uint8_t r = 255;
+        uint8_t g = 255;
+        uint8_t b = 255;
+        float opacity = 1.f;
+        bool blending = false;
+    };
+
     struct StyleData {
         std::string levelName;
         std::string creatorName;
@@ -60,6 +73,7 @@ namespace {
         // decoration templates relative to source blocks instead of whole maps.
         std::vector<std::string> objects;
         std::vector<DecoTemplate> templates;
+        std::vector<PaletteColor> colors;
     };
 
     StyleScannerPopup* g_popup = nullptr;
@@ -300,7 +314,8 @@ namespace {
         if (data.levelName.size() > kMaxNameBytes ||
             data.creatorName.size() > kMaxNameBytes ||
             data.settings.size() > kMaxSettingsBytes ||
-            data.templates.size() > kMaxTemplates) {
+            data.templates.size() > kMaxTemplates ||
+            data.colors.size() > 999) {
             error = "The style archive exceeds its safe export limits.";
             return false;
         }
@@ -358,6 +373,26 @@ namespace {
                     error = "The style exceeds the 64 MiB uncompressed export limit.";
                     return false;
                 }
+            }
+        }
+
+        // Store only static RGB snapshots for custom channels used by the deco.
+        appendU32(payload, static_cast<uint32_t>(data.colors.size()));
+        for (auto const& color : data.colors) {
+            if (color.channelID < 1 || color.channelID > 999 ||
+                !std::isfinite(color.opacity) || color.opacity < 0.f || color.opacity > 1.f) {
+                error = "A custom color palette entry is invalid.";
+                return false;
+            }
+            appendU32(payload, color.channelID);
+            payload.push_back(static_cast<char>(color.r));
+            payload.push_back(static_cast<char>(color.g));
+            payload.push_back(static_cast<char>(color.b));
+            appendFloat(payload, color.opacity);
+            appendU32(payload, color.blending ? 1u : 0u);
+            if (payload.size() > kMaxPayloadBytes) {
+                error = "The style exceeds the 64 MiB uncompressed export limit.";
+                return false;
             }
         }
 
@@ -439,7 +474,9 @@ namespace {
         }
         const bool previousFormat = fields[0] == kPreviousCodeMagic;
         const bool previousTemplateFormat = fields[0] == kPreviousTemplateMagic;
-        if ((!previousFormat && !previousTemplateFormat && fields[0] != kCodeMagic) ||
+        const bool previousV4Format = fields[0] == kPreviousCodeMagicV4;
+        const bool paletteFormat = fields[0] == kCodeMagic;
+        if ((!previousFormat && !previousTemplateFormat && !previousV4Format && !paletteFormat) ||
             fields.size() != 2) {
             error = "Unsupported style code. Scan again with Style Scanner 1.1.0.";
             return false;
@@ -537,6 +574,36 @@ namespace {
             }
         }
 
+        if (paletteFormat) {
+            uint32_t colorCount = 0;
+            if (!readU32(view, cursor, colorCount) || colorCount > 999) {
+                error = "The style archive contains an invalid custom color count.";
+                return false;
+            }
+            parsed.colors.reserve(colorCount);
+            for (uint32_t i = 0; i < colorCount; ++i) {
+                PaletteColor color;
+                uint32_t blending = 0;
+                if (!readU32(view, cursor, color.channelID) ||
+                    cursor > view.size() || view.size() - cursor < 3) {
+                    error = "A custom color palette entry is truncated.";
+                    return false;
+                }
+                color.r = static_cast<uint8_t>(view[cursor++]);
+                color.g = static_cast<uint8_t>(view[cursor++]);
+                color.b = static_cast<uint8_t>(view[cursor++]);
+                if (!readFloat(view, cursor, color.opacity) ||
+                    !readU32(view, cursor, blending) ||
+                    color.channelID < 1 || color.channelID > 999 ||
+                    color.opacity < 0.f || color.opacity > 1.f || blending > 1) {
+                    error = "A custom color palette entry is invalid.";
+                    return false;
+                }
+                color.blending = blending != 0;
+                parsed.colors.emplace_back(color);
+            }
+        }
+
         if (cursor != view.size()) {
             error = "The style archive contains unexpected trailing data.";
             return false;
@@ -590,6 +657,7 @@ namespace {
 
         std::vector<SourceAnchor> anchors;
         std::vector<GameObject*> decorations;
+        std::unordered_set<uint32_t> neededColorIDs;
         const unsigned int objectCount = source->m_objects->count();
         anchors.reserve(std::min<size_t>(objectCount, 20000));
         decorations.reserve(std::min<size_t>(objectCount, 20000));
@@ -674,6 +742,19 @@ namespace {
                 return false;
             }
 
+            // Remember the custom channels referenced by this exact deco piece.
+            // Built-in channels (background, ground, player colors) stay in level settings.
+            if (decoration->m_baseColor &&
+                decoration->m_baseColor->m_colorID >= 1 &&
+                decoration->m_baseColor->m_colorID <= 999) {
+                neededColorIDs.insert(static_cast<uint32_t>(decoration->m_baseColor->m_colorID));
+            }
+            if (decoration->m_detailColor &&
+                decoration->m_detailColor->m_colorID >= 1 &&
+                decoration->m_detailColor->m_colorID <= 999) {
+                neededColorIDs.insert(static_cast<uint32_t>(decoration->m_detailColor->m_colorID));
+            }
+
             DecoItem item;
             item.record = std::move(record);
             item.offsetX = position.x - bestAnchor.position.x;
@@ -719,7 +800,90 @@ namespace {
             templateByShape.emplace(key, output.templates.size());
             output.templates.emplace_back(std::move(styleTemplate));
         }
+
+        // Read only the first (leftmost) static color definition for each custom
+        // channel referenced by copied decoration. Trigger objects themselves
+        // are deliberately not stored, moved, or imported into the target level.
+        if (!neededColorIDs.empty()) {
+            std::unordered_map<uint32_t, float> firstColorX;
+            std::unordered_map<uint32_t, PaletteColor> colorsByChannel;
+            for (unsigned int i = 0; i < objectCount; ++i) {
+                auto* object = static_cast<GameObject*>(source->m_objects->objectAtIndex(i));
+                if (!object || !object->isColorTrigger()) continue;
+
+                const int channel = object->getColorIndex();
+                if (channel < 1 || channel > 999 ||
+                    !neededColorIDs.count(static_cast<uint32_t>(channel))) continue;
+
+                const float x = object->getPosition().x;
+                auto found = firstColorX.find(static_cast<uint32_t>(channel));
+                if (found != firstColorX.end() && x >= found->second) continue;
+
+                auto* trigger = static_cast<EffectGameObject*>(object);
+                PaletteColor color;
+                color.channelID = static_cast<uint32_t>(channel);
+                color.r = trigger->m_triggerTargetColor.r;
+                color.g = trigger->m_triggerTargetColor.g;
+                color.b = trigger->m_triggerTargetColor.b;
+                color.opacity = std::isfinite(trigger->m_opacity)
+                    ? std::clamp(trigger->m_opacity, 0.f, 1.f) : 1.f;
+                color.blending = trigger->m_usesBlending;
+
+                firstColorX[color.channelID] = x;
+                colorsByChannel[color.channelID] = color;
+            }
+
+            output.colors.reserve(colorsByChannel.size());
+            for (uint32_t channel : neededColorIDs) {
+                const auto found = colorsByChannel.find(channel);
+                if (found != colorsByChannel.end()) {
+                    output.colors.emplace_back(found->second);
+                }
+            }
+        }
+
         return true;
+    }
+
+    size_t applyCustomPalette(LevelEditorLayer* editor, std::vector<PaletteColor> const& colors) {
+        if (!editor || !editor->m_levelSettings ||
+            !editor->m_levelSettings->m_effectManager || colors.empty()) return 0;
+
+        auto* manager = editor->m_levelSettings->m_effectManager;
+        size_t copied = 0;
+        for (auto const& entry : colors) {
+            if (entry.channelID < 1 || entry.channelID > 999) continue;
+            const cocos2d::ccColor3B rgb{entry.r, entry.g, entry.b};
+            const float opacity = std::clamp(entry.opacity, 0.f, 1.f);
+
+            auto* action = manager->getColorAction(static_cast<int>(entry.channelID));
+            if (!action) continue;
+
+            action->m_colorID = static_cast<int>(entry.channelID);
+            action->m_fromColor = rgb;
+            action->m_toColor = rgb;
+            action->m_color = rgb;
+            action->m_currentOpacity = opacity;
+            action->m_fromOpacity = opacity;
+            action->m_toOpacity = opacity;
+            action->m_duration = 0.f;
+            action->m_playerColor = 0;
+            action->m_blending = entry.blending;
+            action->m_copyID = 0;
+            action->m_copyOpacity = false;
+            action->m_paused = false;
+            manager->colorActionChanged(action);
+
+            auto* sprite = manager->getColorSprite(static_cast<int>(entry.channelID));
+            if (sprite) {
+                sprite->m_color = rgb;
+                sprite->m_copyColor = rgb;
+                sprite->m_opacity = opacity * 255.f;
+            }
+            ++copied;
+        }
+
+        return copied;
     }
 
     bool applyVisualSettings(LevelEditorLayer* editor, std::string const& settingsString) {
@@ -948,7 +1112,8 @@ public:
         this->setStatus(
             "SCAN OK | " + std::to_string(data.templates.size()) +
             " object styles / " + std::to_string(pieceCount) +
-            " attached deco pieces + background settings. Tap Copy Code."
+            " deco pieces / " + std::to_string(data.colors.size()) +
+            " custom colors + background. Tap Copy Code."
         );
     }
 
@@ -1008,7 +1173,8 @@ public:
         this->setStatus(
             "STYLE READY | " + std::to_string(m_importData.templates.size()) +
             " object styles / " + std::to_string(pieceCount) +
-            " attached deco pieces + background. Open your target level and Apply."
+            " deco pieces / " + std::to_string(m_importData.colors.size()) +
+            " custom colors + background. Open your target level and Apply."
         );
     }
 
@@ -1232,7 +1398,11 @@ public:
         }
 
         const bool settingsApplied = applyVisualSettings(editor, data.settings);
-        if (addedPieces == 0 && !settingsApplied) {
+        const size_t copiedColors = applyCustomPalette(editor, data.colors);
+        if (copiedColors > 0) {
+            editor->updateLevelColors();
+        }
+        if (addedPieces == 0 && !settingsApplied && copiedColors == 0) {
             this->setStatus(
                 "No attached deco patterns matched your blocks or spikes. Try a sample level with visible decoration around them.",
                 true
@@ -1248,7 +1418,12 @@ public:
             result += " " + std::to_string(unmatchedBlocks) +
                       " objects had no matching decoration pattern.";
         }
-        if (settingsApplied) result += " Background, ground and palette copied.";
+        if (settingsApplied) result += " Background and ground copied.";
+        if (copiedColors > 0) {
+            result += " " + std::to_string(copiedColors) + " custom colors copied.";
+        } else if (!data.colors.empty()) {
+            result += " Custom color channels could not be applied.";
+        }
         result += " Your original blocks, spikes, gameplay and music were not replaced.";
         this->setStatus(result);
     }
