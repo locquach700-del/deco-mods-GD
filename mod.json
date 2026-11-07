@@ -5,10 +5,10 @@
     "android": "2.2081"
   },
   "id": "developer.stylescanner",
-  "name": "Procedural Level Generator & Auto Deco",
-  "version": "1.4.0",
+  "name": "3D Style Generator & Auto Deco",
+  "version": "1.5.0",
   "developer": "locquach700-del",
-  "description": "Creates deterministic Geometry Dash gameplay layouts with ordered spike patterns, readable mode-specific lanes, clear gaps and structured automatic decoration. No random hazard placement or injected speed/gravity changes.",
+  "description": "Builds structured Geometry Dash gameplay layouts and adds authentic 3DL block edges, spike accents and air decoration to existing or generated levels. Includes six coordinated styles and source-level decoration transfer.",
   "platforms": [
     "win",
     "android"
