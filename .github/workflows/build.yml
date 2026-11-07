@@ -45,6 +45,9 @@ jobs:
     steps:
       - uses: geode-sdk/build-geode-mod/combine@main
         id: build
+        with:
+          # Geode 5.0.0 does not support zstd-compressed packages.
+          zstd: false
 
       - uses: actions/upload-artifact@v4
         with:
