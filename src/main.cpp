@@ -1969,6 +1969,246 @@ public:
     }
 };
 
+
+namespace {
+    AutoLevelPopup* g_generatorPopup = nullptr;
+}
+
+class AutoLevelPopup final : public geode::Popup {
+protected:
+    int m_difficulty = 0;
+    int m_layoutStyle = 0;
+    int m_theme = 0;
+    cocos2d::CCLabelBMFont* m_difficultyLabel = nullptr;
+    cocos2d::CCLabelBMFont* m_layoutLabel = nullptr;
+    cocos2d::CCLabelBMFont* m_themeLabel = nullptr;
+    cocos2d::CCLabelBMFont* m_statusLabel = nullptr;
+
+    static constexpr const char* difficultyNames[] = {
+        "Easy", "Normal", "Hard", "Harder", "Insane",
+        "Easy Demon", "Medium Demon", "Hard Demon", "Insane Demon", "Extreme Demon"
+    };
+    static constexpr const char* layoutNames[] = {
+        "Classic Flow", "Orb Flow", "Tech Steps", "Wave Corridors", "Sync Pattern", "Mixed Adventure"
+    };
+    static constexpr const char* themeNames[] = {
+        "Neon City", "Inferno", "Ice Crystal", "Emerald Forest", "Galaxy", "Cyber"
+    };
+
+    ~AutoLevelPopup() override {
+        if (g_generatorPopup == this) g_generatorPopup = nullptr;
+    }
+
+    CCMenuItemSpriteExtra* makeArrow(
+        const char* label,
+        SEL_MenuHandler selector,
+        float x,
+        float y
+    ) {
+        auto* item = CCMenuItemSpriteExtra::create(
+            ButtonSprite::create(label, "goldFont.fnt", "GJ_button_01.png", 0.48f),
+            this,
+            selector
+        );
+        if (!item) return nullptr;
+        item->setPosition({x, y});
+        m_buttonMenu->addChild(item);
+        return item;
+    }
+
+    void refreshOptions() {
+        if (m_difficultyLabel) {
+            const std::string text = std::string("DIFFICULTY: ") + difficultyNames[m_difficulty];
+            m_difficultyLabel->setString(text.c_str());
+        }
+        if (m_layoutLabel) {
+            const std::string text = std::string("LAYOUT: ") + layoutNames[m_layoutStyle];
+            m_layoutLabel->setString(text.c_str());
+        }
+        if (m_themeLabel) {
+            const std::string text = std::string("DECO THEME: ") + themeNames[m_theme];
+            m_themeLabel->setString(text.c_str());
+        }
+    }
+
+    bool init() override {
+        constexpr float popupWidth = 430.f;
+        constexpr float popupHeight = 390.f;
+        if (!geode::Popup::init(popupWidth, popupHeight)) return false;
+
+        const auto winSize = CCDirector::get()->getWinSize();
+        m_mainLayer->setPosition(winSize / 2.f);
+        const float fitScale = std::min(
+            (winSize.width - 20.f) / popupWidth,
+            (winSize.height - 20.f) / popupHeight
+        );
+        m_mainLayer->setScale(std::clamp(fitScale, 0.46f, 0.78f));
+
+        this->setTitle("LEVEL GENERATOR + AUTO DECO", "goldFont.fnt", 0.48f, 22.f);
+        if (m_closeBtn) {
+            const auto size = m_mainLayer->getContentSize();
+            m_closeBtn->setPosition({size.width - 17.f, size.height - 17.f});
+            m_closeBtn->setScale(0.50f);
+            m_closeBtn->setZOrder(10000);
+        }
+
+        auto makeOptionLabel = [this](const char* text, float y) {
+            auto* label = cocos2d::CCLabelBMFont::create(text, "goldFont.fnt");
+            if (!label) return static_cast<cocos2d::CCLabelBMFont*>(nullptr);
+            label->setScale(0.48f);
+            m_mainLayer->addChildAtPosition(label, geode::Anchor::Center, {0.f, y});
+            return label;
+        };
+
+        m_difficultyLabel = makeOptionLabel("DIFFICULTY: Easy", 103.f);
+        m_layoutLabel = makeOptionLabel("LAYOUT: Classic Flow", 53.f);
+        m_themeLabel = makeOptionLabel("DECO THEME: Neon City", 3.f);
+        if (!m_difficultyLabel || !m_layoutLabel || !m_themeLabel) return false;
+
+        const float leftX = popupWidth / 2.f - 145.f;
+        const float rightX = popupWidth / 2.f + 145.f;
+
+        if (!makeArrow("<", menu_selector(AutoLevelPopup::onDifficultyPrev), leftX, popupHeight / 2.f + 103.f)) return false;
+        if (!makeArrow(">", menu_selector(AutoLevelPopup::onDifficultyNext), rightX, popupHeight / 2.f + 103.f)) return false;
+        if (!makeArrow("<", menu_selector(AutoLevelPopup::onLayoutPrev), leftX, popupHeight / 2.f + 53.f)) return false;
+        if (!makeArrow(">", menu_selector(AutoLevelPopup::onLayoutNext), rightX, popupHeight / 2.f + 53.f)) return false;
+        if (!makeArrow("<", menu_selector(AutoLevelPopup::onThemePrev), leftX, popupHeight / 2.f + 3.f)) return false;
+        if (!makeArrow(">", menu_selector(AutoLevelPopup::onThemeNext), rightX, popupHeight / 2.f + 3.f)) return false;
+
+        auto* generateButton = CCMenuItemSpriteExtra::create(
+            ButtonSprite::create("1. GENERATE LAYOUT", "goldFont.fnt", "GJ_button_01.png", 0.62f),
+            this,
+            menu_selector(AutoLevelPopup::onGenerateLayout)
+        );
+        if (!generateButton) return false;
+        generateButton->setPosition({popupWidth / 2.f - 104.f, popupHeight / 2.f - 65.f});
+        m_buttonMenu->addChild(generateButton);
+
+        auto* decoButton = CCMenuItemSpriteExtra::create(
+            ButtonSprite::create("2. AUTO DECO", "goldFont.fnt", "GJ_button_02.png", 0.62f),
+            this,
+            menu_selector(AutoLevelPopup::onAutoDeco)
+        );
+        if (!decoButton) return false;
+        decoButton->setPosition({popupWidth / 2.f + 104.f, popupHeight / 2.f - 65.f});
+        m_buttonMenu->addChild(decoButton);
+
+        auto* hint = cocos2d::CCLabelBMFont::create(
+            "Create layout first. Auto Deco only works after a successful layout.",
+            "chatFont.fnt"
+        );
+        if (!hint) return false;
+        hint->setScale(0.36f);
+        hint->limitLabelWidth(380.f, 0.36f, 0.18f);
+        m_mainLayer->addChildAtPosition(hint, geode::Anchor::Center, {0.f, -103.f});
+
+        m_statusLabel = cocos2d::CCLabelBMFont::create(
+            "Open a NEW EMPTY level, choose options, then Generate Layout.",
+            "chatFont.fnt"
+        );
+        if (!m_statusLabel) return false;
+        m_statusLabel->setScale(0.37f);
+        m_statusLabel->limitLabelWidth(380.f, 0.37f, 0.18f);
+        m_mainLayer->addChildAtPosition(m_statusLabel, geode::Anchor::Center, {0.f, -143.f});
+
+        refreshOptions();
+        return true;
+    }
+
+    void setStatus(std::string const& message, bool isError = false) {
+        if (!m_statusLabel) return;
+        m_statusLabel->setString(message.c_str());
+        m_statusLabel->setScale(0.37f);
+        m_statusLabel->setColor(
+            isError ? cocos2d::ccc3(255, 105, 105) : cocos2d::ccc3(150, 255, 150)
+        );
+        m_statusLabel->limitLabelWidth(380.f, 0.37f, 0.18f);
+    }
+
+public:
+    static AutoLevelPopup* create() {
+        auto* popup = new AutoLevelPopup();
+        if (popup && popup->init()) {
+            popup->autorelease();
+            return popup;
+        }
+        CC_SAFE_DELETE(popup);
+        return nullptr;
+    }
+
+    void onDifficultyPrev(cocos2d::CCObject*) {
+        m_difficulty = (m_difficulty + 9) % 10;
+        refreshOptions();
+    }
+
+    void onDifficultyNext(cocos2d::CCObject*) {
+        m_difficulty = (m_difficulty + 1) % 10;
+        refreshOptions();
+    }
+
+    void onLayoutPrev(cocos2d::CCObject*) {
+        m_layoutStyle = (m_layoutStyle + 5) % 6;
+        refreshOptions();
+    }
+
+    void onLayoutNext(cocos2d::CCObject*) {
+        m_layoutStyle = (m_layoutStyle + 1) % 6;
+        refreshOptions();
+    }
+
+    void onThemePrev(cocos2d::CCObject*) {
+        m_theme = (m_theme + 5) % 6;
+        refreshOptions();
+    }
+
+    void onThemeNext(cocos2d::CCObject*) {
+        m_theme = (m_theme + 1) % 6;
+        refreshOptions();
+    }
+
+    void onGenerateLayout(cocos2d::CCObject*) {
+        auto* editor = LevelEditorLayer::get();
+        if (!editor) {
+            this->setStatus("Open a new empty level in the Geometry Dash editor first.", true);
+            return;
+        }
+
+        std::string error;
+        if (!generatePlayableLayout(editor, m_difficulty, m_layoutStyle, error)) {
+            this->setStatus(error, true);
+            return;
+        }
+
+        this->setStatus(
+            std::string("LAYOUT CREATED | ") + difficultyNames[m_difficulty] +
+            " / " + layoutNames[m_layoutStyle] +
+            " | " + std::to_string(g_generatedAnchorIDs.size()) +
+            " blocks, spikes and saw anchors. Now press AUTO DECO."
+        );
+    }
+
+    void onAutoDeco(cocos2d::CCObject*) {
+        auto* editor = LevelEditorLayer::get();
+        std::string error;
+        size_t decorationCount = 0;
+        if (!autoDecorateGeneratedLayout(editor, m_theme, error, decorationCount)) {
+            this->setStatus(error, true);
+            return;
+        }
+
+        this->setStatus(
+            std::string("AUTO DECO COMPLETE | ") + themeNames[m_theme] +
+            " | " + std::to_string(decorationCount) +
+            " visual deco pieces, custom colors and background palette applied. Gameplay objects were kept."
+        );
+    }
+
+    void onClose(cocos2d::CCObject* sender) override {
+        if (g_generatorPopup == this) g_generatorPopup = nullptr;
+        geode::Popup::onClose(sender);
+    }
+};
+
 namespace {
     void toggleStyleScanner() {
         if (!LevelEditorLayer::get() && !PlayLayer::get()) return;
@@ -1984,19 +2224,42 @@ namespace {
         }
     }
 
+    void toggleLevelGenerator() {
+        if (!LevelEditorLayer::get()) return;
+
+        if (g_generatorPopup) {
+            g_generatorPopup->onClose(nullptr);
+            return;
+        }
+
+        if (auto* popup = AutoLevelPopup::create()) {
+            g_generatorPopup = popup;
+            popup->show();
+        }
+    }
+
     geode::ListenerHandle g_keyboardListener;
+    geode::ListenerHandle g_styleKeyboardListener;
 
 }
 
 $on_game(Loaded) {
     g_keyboardListener = geode::KeyboardInputEvent(cocos2d::KEY_F3).listen(
         [](geode::KeyboardInputData& data) {
-            // Handle only the initial press. Repeated key-down events must not
-            // toggle the popup more than once while F3 is held.
+            if (data.action == geode::KeyboardInputData::Action::Press) {
+                toggleLevelGenerator();
+            }
+            return false;
+        }
+    );
+
+    // Keep the old style scanner available as an optional legacy tool on F4.
+    g_styleKeyboardListener = geode::KeyboardInputEvent(cocos2d::KEY_F4).listen(
+        [](geode::KeyboardInputData& data) {
             if (data.action == geode::KeyboardInputData::Action::Press) {
                 toggleStyleScanner();
             }
-            return false; // Let Geometry Dash and other mods receive the key.
+            return false;
         }
     );
 }
