@@ -557,42 +557,115 @@ inline void addInterior(Layout const& L, StyleDef const& st, Plan& plan) {
     }
 }
 
-/// Spike treatment: soft halo plus a triangular three-line highlight fitted to
-/// each object's scale and rotation. These are no-touch decoration blocks.
+// Transform a point from an object's local space into editor world space.
+// Geometry Dash's positive object rotation is clockwise in this coordinate system.
+inline std::pair<float, float> objectPoint(PointObj const& obj, float x, float y) {
+    constexpr float kDegToRad = 0.017453292519943295f;
+    float r = obj.rotation * kDegToRad;
+    float c = std::cos(r), sn = std::sin(r);
+    return {obj.x + x * c + y * sn, obj.y - x * sn + y * c};
+}
+
+// Add a thin no-touch block between two points in an object's local space.
+inline void addObjectLine(Plan& plan, PointObj const& obj,
+                          float x1, float y1, float x2, float y2,
+                          float thickness, Role role) {
+    constexpr float kRadToDeg = 57.29577951308232f;
+    float dx = x2 - x1, dy = y2 - y1;
+    float length = std::sqrt(dx * dx + dy * dy);
+    if (length < 1.f) return;
+    auto center = objectPoint(obj, (x1 + x2) * 0.5f, (y1 + y2) * 0.5f);
+    // Item rotation uses the same clockwise convention as objectPoint().
+    float rotation = obj.rotation - std::atan2(dy, dx) * kRadToDeg;
+    add(plan, center.first, center.second, length / 30.f,
+        std::max(0.035f, thickness / 30.f), rotation, role);
+}
+
+/// Per-object block decoration. A compact inset highlight and one of four
+/// surface motifs are placed on every detected solid/slope/collision block.
+/// Existing grid-edge lighting remains responsible for the outer silhouette.
+inline void addBlockAccents(Layout const& L, Plan& plan) {
+    for (auto const& b : L.blocks) {
+        float hw = 15.f * b.sx, hh = 15.f * b.sy;
+        float minHalf = std::min(hw, hh);
+        if (minHalf < 3.f) continue;
+        float inset = std::clamp(minHalf * 0.18f, 1.4f, 4.0f);
+        float line = std::clamp(minHalf * 0.10f, 1.1f, 2.8f);
+        float left = -hw + inset, right = hw - inset;
+        float bottom = -hh + inset, top = hh - inset;
+        float width = right - left, height = top - bottom;
+        if (width < 2.f || height < 2.f) continue;
+
+        // Short upper bevel highlight: visible on each individual block tile.
+        addObjectLine(plan, b, left + width * 0.12f, top,
+                      right - width * 0.12f, top, line, Role::Edge);
+
+        uint32_t h = hash2(b.objectID, static_cast<int>(std::floor(b.x / 30.f)) * 31 +
+                                      static_cast<int>(std::floor(b.y / 30.f)));
+        float cx = 0.f, cy = 0.f;
+        auto center = objectPoint(b, cx, cy);
+        switch (h % 4u) {
+            case 0: // slash / engraved groove
+                addObjectLine(plan, b, -width * 0.28f, -height * 0.22f,
+                              width * 0.28f, height * 0.22f, line * 1.15f, Role::Detail);
+                break;
+            case 1: // crosshair panel
+                addObjectLine(plan, b, -width * 0.25f, 0.f,
+                              width * 0.25f, 0.f, line, Role::Detail);
+                addObjectLine(plan, b, 0.f, -height * 0.25f,
+                              0.f, height * 0.25f, line, Role::Accent);
+                break;
+            case 2: // small diamond plate
+                add(plan, center.first, center.second,
+                    std::max(0.12f, std::min(0.42f, width / 90.f)),
+                    std::max(0.12f, std::min(0.42f, height / 90.f)),
+                    b.rotation + 45.f, Role::Accent);
+                break;
+            default: // paired rivets and a center groove
+                addObjectLine(plan, b, -width * 0.32f, -height * 0.20f,
+                              width * 0.32f, -height * 0.20f, line, Role::Detail);
+                add(plan, objectPoint(b, -width * 0.34f, height * 0.28f).first,
+                          objectPoint(b, -width * 0.34f, height * 0.28f).second,
+                    0.13f, 0.13f, b.rotation + 45.f, Role::Accent);
+                add(plan, objectPoint(b, width * 0.34f, height * 0.28f).first,
+                          objectPoint(b, width * 0.34f, height * 0.28f).second,
+                    0.13f, 0.13f, b.rotation + 45.f, Role::Accent);
+                break;
+        }
+    }
+}
+
+/// Spike decoration follows the actual triangular silhouette: two sloping
+/// sides, a base stripe, an inner shine, a tip glint and a restrained halo.
+/// This is applied to every object classified as Hazard/AnimatedHazard or a
+/// known spike asset, regardless of the spike's scale or rotation.
 inline void addSpikeAccents(Layout const& L, Plan& plan) {
-    constexpr float kRadToDeg = 57.2957795f;
     for (auto const& s : L.spikes) {
-        float rad = s.rotation / kRadToDeg;
-        float c = std::cos(rad), sn = std::sin(rad);
-        auto world = [&](float localX, float localY) -> std::pair<float, float> {
-            // Match the clockwise rotation convention used by drawItem().
-            return {s.x + localX * c + localY * sn,
-                    s.y - localX * sn + localY * c};
-        };
+        float hw = 15.f * s.sx;
+        float hh = 15.f * s.sy;
+        if (hw < 2.f || hh < 2.f) continue;
 
-        auto halo = world(0.f, 3.f * s.sy);
-        add(plan, halo.first, halo.second, 1.7f * s.sx, 1.7f * s.sy,
+        float thickness = std::clamp(std::min(hw, hh) * 0.12f, 1.1f, 3.2f);
+        float baseY = -hh * 0.78f;
+        float tipY = hh * 0.82f;
+        float baseHalf = hw * 0.78f;
+
+        // Soft halo sits behind the spike, while the following lines sit above it.
+        auto halo = objectPoint(s, 0.f, 0.f);
+        add(plan, halo.first, halo.second, 1.20f * s.sx, 1.20f * s.sy,
             45.f + s.rotation, Role::Halo);
-        add(plan, halo.first, halo.second, 1.0f * s.sx, 1.0f * s.sy,
-            45.f + s.rotation, Role::Halo);
 
-        float halfW = 15.f * s.sx;
-        float halfH = 15.f * s.sy;
-        float sideLength = std::sqrt(halfW * halfW + (2.f * halfH) * (2.f * halfH));
-        float sideScale = std::max(0.12f, sideLength / 30.f);
-        float sideAngle = std::atan2(2.f * halfH, halfW) * kRadToDeg;
-        float thickness = std::clamp(0.075f * std::min(s.sx, s.sy), 0.035f, 0.12f);
+        // Real triangular silhouette: base-left -> tip -> base-right -> base-left.
+        addObjectLine(plan, s, -baseHalf, baseY, 0.f, tipY, thickness, Role::Edge);
+        addObjectLine(plan, s, 0.f, tipY, baseHalf, baseY, thickness, Role::Edge);
+        addObjectLine(plan, s, -baseHalf, baseY, baseHalf, baseY,
+                      thickness * 0.85f, Role::Detail);
 
-        auto left = world(-halfW * 0.5f, 0.f);
-        auto right = world(halfW * 0.5f, 0.f);
-        auto base = world(0.f, -halfH);
-        auto tip = world(0.f, halfH);
-        add(plan, left.first, left.second, sideScale, thickness,
-            -sideAngle + s.rotation, Role::Edge);
-        add(plan, right.first, right.second, sideScale, thickness,
-            sideAngle + s.rotation, Role::Edge);
-        add(plan, base.first, base.second, 0.92f * s.sx, thickness,
-            s.rotation, Role::Detail);
+        // Inner side glints make the spike visibly decorated rather than only outlined.
+        addObjectLine(plan, s, -baseHalf * 0.52f, baseY * 0.48f,
+                      -baseHalf * 0.10f, tipY * 0.78f,
+                      thickness * 0.55f, Role::Accent);
+        auto tip = objectPoint(s, 0.f, tipY * 0.90f);
         add(plan, tip.first, tip.second, 0.18f * s.sx, 0.18f * s.sy,
             45.f + s.rotation, Role::Accent);
     }
@@ -774,6 +847,7 @@ inline Plan buildPlan(LevelEditorLayer* editor, std::unordered_set<GameObject*> 
     addEdges(L, st, rng, plan);
     addCorners(L, st, rng, plan);
     addInterior(L, st, plan);
+    addBlockAccents(L, plan);
     addGameplayAccents(L, plan);
     if (particles) addMotes(L, st, rng, plan);
     addSkyline(L, st, rng, plan);
