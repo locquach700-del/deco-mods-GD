@@ -225,10 +225,11 @@ inline std::array<ChannelDef, kChannelCount> channelDefs(StyleDef const& st) {
 }
 
 struct Item {
-    float x, y;      // world position
+    float x, y;      // editor/object-layer position
     float sx, sy;    // scale relative to a 30x30 block
     float rot;       // degrees, clockwise (GD convention)
     Role role;
+    int zLayer = -9999; // -9999 means use the role's default layer
 };
 
 struct Trigger {
@@ -265,8 +266,9 @@ inline BuildLimits readLimits() {
     return lim;
 }
 
-inline void add(Plan& plan, float x, float y, float sx, float sy, float rot, Role role) {
-    plan.items.push_back(Item{x, y, sx, sy, rot, role});
+inline void add(Plan& plan, float x, float y, float sx, float sy, float rot, Role role,
+                int zLayer = -9999) {
+    plan.items.push_back(Item{x, y, sx, sy, rot, role, zLayer});
 }
 
 // ============================================================================
@@ -279,6 +281,7 @@ struct PointObj {
     float x, y, sx, sy;
     float rotation = 0.f;
     int objectID = 0;
+    int zLayer = 3;
 };
 
 struct Layout {
@@ -402,11 +405,13 @@ inline Layout analyze(LevelEditorLayer* editor, std::unordered_set<GameObject*> 
         switch (k) {
             case Kind::Block:
                 if (std::max(sx, sy) < 0.20f) continue;
-                L.blocks.push_back({p.x, p.y, sx, sy, obj->getRotation(), obj->m_objectID});
+                L.blocks.push_back({p.x, p.y, sx, sy, obj->getRotation(), obj->m_objectID,
+                                    static_cast<int>(obj->getObjectZLayer())});
                 markBlock(L, p.x, p.y, sx, sy);
                 break;
             case Kind::Spike:
-                L.spikes.push_back({p.x, p.y, sx, sy, obj->getRotation(), obj->m_objectID});
+                L.spikes.push_back({p.x, p.y, sx, sy, obj->getRotation(), obj->m_objectID,
+                                    static_cast<int>(obj->getObjectZLayer())});
                 L.grow(p.x, p.y);
                 break;
             case Kind::Portal: L.portals.push_back({p.x, p.y, sx, sy}); L.grow(p.x, p.y); break;
@@ -574,100 +579,134 @@ inline void addObjectLine(Plan& plan, PointObj const& obj,
     float dx = x2 - x1, dy = y2 - y1;
     float length = std::sqrt(dx * dx + dy * dy);
     if (length < 1.f) return;
+
     auto center = objectPoint(obj, (x1 + x2) * 0.5f, (y1 + y2) * 0.5f);
-    // Item rotation uses the same clockwise convention as objectPoint().
     float rotation = obj.rotation - std::atan2(dy, dx) * kRadToDeg;
     add(plan, center.first, center.second, length / 30.f,
-        std::max(0.035f, thickness / 30.f), rotation, role);
+        std::max(0.035f, thickness / 30.f), rotation, role, obj.zLayer);
 }
 
-/// Per-object block decoration. A compact inset highlight and one of four
-/// surface motifs are placed on every detected solid/slope/collision block.
-/// Existing grid-edge lighting remains responsible for the outer silhouette.
-inline void addBlockAccents(Layout const& L, Plan& plan) {
+inline void addObjectMark(Plan& plan, PointObj const& obj,
+                          float x, float y, float sx, float sy,
+                          float localRotation, Role role) {
+    auto p = objectPoint(obj, x, y);
+    add(plan, p.first, p.second, sx * obj.sx, sy * obj.sy,
+        obj.rotation + localRotation, role, obj.zLayer);
+}
+
+/// Surface-only block decoration. Every piece is inset into the individual
+/// source object's own bounds; no grid-derived bars are placed above/below it.
+inline void addBlockAccents(Layout const& L, StyleDef const& st, Plan& plan) {
     for (auto const& b : L.blocks) {
         float hw = 15.f * b.sx, hh = 15.f * b.sy;
         float minHalf = std::min(hw, hh);
         if (minHalf < 3.f) continue;
-        float inset = std::clamp(minHalf * 0.18f, 1.4f, 4.0f);
-        float line = std::clamp(minHalf * 0.10f, 1.1f, 2.8f);
-        float left = -hw + inset, right = hw - inset;
-        float bottom = -hh + inset, top = hh - inset;
+
+        float insetX = std::min(hw * 0.24f, 4.5f);
+        float insetY = std::min(hh * 0.24f, 4.5f);
+        float left = -hw + insetX, right = hw - insetX;
+        float bottom = -hh + insetY, top = hh - insetY;
         float width = right - left, height = top - bottom;
+        float line = std::clamp(minHalf * 0.085f, 0.75f, 2.0f);
         if (width < 2.f || height < 2.f) continue;
 
-        // Short upper bevel highlight: visible on each individual block tile.
-        addObjectLine(plan, b, left + width * 0.12f, top,
-                      right - width * 0.12f, top, line, Role::Edge);
+        // Four-sided frame remains inside the block's own face.
+        addObjectLine(plan, b, left, bottom, right, bottom, line, Role::Edge);
+        addObjectLine(plan, b, right, bottom, right, top, line, Role::Edge);
+        addObjectLine(plan, b, right, top, left, top, line, Role::Edge);
+        addObjectLine(plan, b, left, top, left, bottom, line, Role::Edge);
 
-        uint32_t h = hash2(b.objectID, static_cast<int>(std::floor(b.x / 30.f)) * 31 +
-                                      static_cast<int>(std::floor(b.y / 30.f)));
-        float cx = 0.f, cy = 0.f;
-        auto center = objectPoint(b, cx, cy);
-        switch (h % 4u) {
-            case 0: // slash / engraved groove
-                addObjectLine(plan, b, -width * 0.28f, -height * 0.22f,
-                              width * 0.28f, height * 0.22f, line * 1.15f, Role::Detail);
+        float innerW = width * 0.68f, innerH = height * 0.68f;
+        uint32_t h = hash2(b.objectID,
+            static_cast<int>(std::floor(b.x / 30.f)) * 31 +
+            static_cast<int>(std::floor(b.y / 30.f)));
+
+        switch (st.motif) {
+            case Motif::Circuit:
+                addObjectLine(plan, b, -innerW * 0.38f, 0.f, innerW * 0.38f, 0.f, line, Role::Detail);
+                addObjectLine(plan, b, 0.f, -innerH * 0.38f, 0.f, innerH * 0.38f, line, Role::Accent);
+                addObjectMark(plan, b, (h & 1u) ? -innerW * 0.34f : innerW * 0.34f,
+                              (h & 2u) ? -innerH * 0.30f : innerH * 0.30f,
+                              0.12f, 0.12f, 45.f, Role::Accent);
                 break;
-            case 1: // crosshair panel
-                addObjectLine(plan, b, -width * 0.25f, 0.f,
-                              width * 0.25f, 0.f, line, Role::Detail);
-                addObjectLine(plan, b, 0.f, -height * 0.25f,
-                              0.f, height * 0.25f, line, Role::Accent);
+            case Motif::Rivet:
+                for (float sx : {-0.32f, 0.32f}) {
+                    for (float sy : {-0.30f, 0.30f}) {
+                        addObjectMark(plan, b, sx * width, sy * height,
+                                      0.12f, 0.12f, 45.f, Role::Accent);
+                    }
+                }
+                addObjectLine(plan, b, -innerW * 0.30f, 0.f, innerW * 0.30f, 0.f,
+                              line, Role::Detail);
                 break;
-            case 2: // small diamond plate
-                add(plan, center.first, center.second,
-                    std::max(0.12f, std::min(0.42f, width / 90.f)),
-                    std::max(0.12f, std::min(0.42f, height / 90.f)),
-                    b.rotation + 45.f, Role::Accent);
+            case Motif::Candy:
+                addObjectLine(plan, b, -innerW * 0.36f, -innerH * 0.20f,
+                              -innerW * 0.04f, innerH * 0.20f, line * 1.2f, Role::Detail);
+                addObjectLine(plan, b, innerW * 0.04f, -innerH * 0.20f,
+                              innerW * 0.36f, innerH * 0.20f, line * 1.2f, Role::Accent);
                 break;
-            default: // paired rivets and a center groove
-                addObjectLine(plan, b, -width * 0.32f, -height * 0.20f,
-                              width * 0.32f, -height * 0.20f, line, Role::Detail);
-                add(plan, objectPoint(b, -width * 0.34f, height * 0.28f).first,
-                          objectPoint(b, -width * 0.34f, height * 0.28f).second,
-                    0.13f, 0.13f, b.rotation + 45.f, Role::Accent);
-                add(plan, objectPoint(b, width * 0.34f, height * 0.28f).first,
-                          objectPoint(b, width * 0.34f, height * 0.28f).second,
-                    0.13f, 0.13f, b.rotation + 45.f, Role::Accent);
+            case Motif::Frost:
+                addObjectLine(plan, b, 0.f, innerH * 0.34f, innerW * 0.30f, 0.f, line, Role::Detail);
+                addObjectLine(plan, b, innerW * 0.30f, 0.f, 0.f, -innerH * 0.34f, line, Role::Detail);
+                addObjectLine(plan, b, 0.f, -innerH * 0.34f, -innerW * 0.30f, 0.f, line, Role::Accent);
+                addObjectLine(plan, b, -innerW * 0.30f, 0.f, 0.f, innerH * 0.34f, line, Role::Accent);
+                break;
+            case Motif::Bolt:
+                addObjectLine(plan, b, -innerW * 0.34f, innerH * 0.28f,
+                              -innerW * 0.02f, innerH * 0.02f, line * 1.35f, Role::Accent);
+                addObjectLine(plan, b, -innerW * 0.02f, innerH * 0.02f,
+                              innerW * 0.12f, innerH * 0.02f, line * 1.35f, Role::Accent);
+                addObjectLine(plan, b, innerW * 0.12f, innerH * 0.02f,
+                              innerW * 0.34f, -innerH * 0.28f, line * 1.35f, Role::Accent);
+                break;
+            case Motif::Ember:
+                addObjectLine(plan, b, -innerW * 0.30f, innerH * 0.16f,
+                              innerW * 0.30f, innerH * 0.16f, line, Role::Detail);
+                addObjectMark(plan, b, 0.f, -innerH * 0.16f,
+                              0.18f, 0.18f, 45.f, Role::Accent);
+                break;
+            case Motif::Radiant:
+            default:
+                addObjectLine(plan, b, -innerW * 0.30f, 0.f, innerW * 0.30f, 0.f,
+                              line, Role::Accent);
+                addObjectLine(plan, b, 0.f, -innerH * 0.30f, 0.f, innerH * 0.30f,
+                              line, Role::Accent);
+                addObjectMark(plan, b, 0.f, 0.f, 0.17f, 0.17f,
+                              45.f, Role::Detail);
                 break;
         }
     }
 }
 
-/// Spike decoration follows the actual triangular silhouette: two sloping
-/// sides, a base stripe, an inner shine, a tip glint and a restrained halo.
-/// This is applied to every object classified as Hazard/AnimatedHazard or a
-/// known spike asset, regardless of the spike's scale or rotation.
+/// Spike-face decoration. Inset strokes follow the spike object's own
+/// position, scale and rotation; no halo or top-offset objects are created.
 inline void addSpikeAccents(Layout const& L, Plan& plan) {
     for (auto const& s : L.spikes) {
         float hw = 15.f * s.sx;
         float hh = 15.f * s.sy;
         if (hw < 2.f || hh < 2.f) continue;
 
-        float thickness = std::clamp(std::min(hw, hh) * 0.12f, 1.1f, 3.2f);
-        float baseY = -hh * 0.78f;
-        float tipY = hh * 0.82f;
-        float baseHalf = hw * 0.78f;
+        float thickness = std::clamp(std::min(hw, hh) * 0.10f, 0.75f, 1.9f);
+        float baseY = -hh * 0.50f;
+        float tipY = hh * 0.58f;
+        float baseHalf = hw * 0.58f;
+        float innerHalf = baseHalf * 0.48f;
 
-        // Soft halo sits behind the spike, while the following lines sit above it.
-        auto halo = objectPoint(s, 0.f, 0.f);
-        add(plan, halo.first, halo.second, 1.20f * s.sx, 1.20f * s.sy,
-            45.f + s.rotation, Role::Halo);
-
-        // Real triangular silhouette: base-left -> tip -> base-right -> base-left.
+        // Entire triangular frame is inset from the assumed spike sprite bounds.
         addObjectLine(plan, s, -baseHalf, baseY, 0.f, tipY, thickness, Role::Edge);
         addObjectLine(plan, s, 0.f, tipY, baseHalf, baseY, thickness, Role::Edge);
         addObjectLine(plan, s, -baseHalf, baseY, baseHalf, baseY,
                       thickness * 0.85f, Role::Detail);
 
-        // Inner side glints make the spike visibly decorated rather than only outlined.
-        addObjectLine(plan, s, -baseHalf * 0.52f, baseY * 0.48f,
-                      -baseHalf * 0.10f, tipY * 0.78f,
-                      thickness * 0.55f, Role::Accent);
-        auto tip = objectPoint(s, 0.f, tipY * 0.90f);
-        add(plan, tip.first, tip.second, 0.18f * s.sx, 0.18f * s.sy,
-            45.f + s.rotation, Role::Accent);
+        // Facets and crossbar are engraved inside the triangle.
+        addObjectLine(plan, s, -innerHalf, baseY * 0.18f,
+                      -baseHalf * 0.08f, tipY * 0.62f, thickness, Role::Accent);
+        addObjectLine(plan, s, baseHalf * 0.08f, tipY * 0.62f,
+                      innerHalf, baseY * 0.18f, thickness, Role::Accent);
+        addObjectLine(plan, s, -innerHalf * 0.62f, -hh * 0.08f,
+                      innerHalf * 0.62f, -hh * 0.08f, thickness, Role::Detail);
+        addObjectMark(plan, s, 0.f, hh * 0.02f, 0.13f, 0.13f,
+                      45.f, Role::Accent);
     }
 }
 
@@ -844,10 +883,10 @@ inline Plan buildPlan(LevelEditorLayer* editor, std::unordered_set<GameObject*> 
     seed = mixSeed(seed, static_cast<uint64_t>(static_cast<int64_t>(L.maxY)));
     Rng rng(seed);
 
-    addEdges(L, st, rng, plan);
-    addCorners(L, st, rng, plan);
-    addInterior(L, st, plan);
-    addBlockAccents(L, plan);
+    // Surface decorations are now generated in each source object's local frame.
+    // The old grid-snapped edge strips were the source of floating offsets on
+    // scaled/rotated blocks and spikes.
+    addBlockAccents(L, st, plan);
     addGameplayAccents(L, plan);
     if (particles) addMotes(L, st, rng, plan);
     addSkyline(L, st, rng, plan);
@@ -867,9 +906,10 @@ inline Plan buildPlan(LevelEditorLayer* editor, std::unordered_set<GameObject*> 
 inline void appendItem(std::string& out, Item const& it, int channelBase) {
     RoleInfo info = roleInfo(it.role);
     int ch = channelBase + info.channelOffset;
+    int layer = it.zLayer == -9999 ? info.zLayer : it.zLayer;
     fmt::format_to(std::back_inserter(out),
         "1,1,2,{:.2f},3,{:.2f},6,{:.2f},21,{},22,{},24,{},25,{},128,{:.3f},129,{:.3f},121,1,103,1,96,1;",
-        it.x, it.y, it.rot, ch, ch, info.zLayer, info.zOrder, it.sx, it.sy);
+        it.x, it.y, it.rot, ch, ch, layer, info.zOrder, it.sx, it.sy);
 }
 
 inline void appendTrigger(std::string& out, Trigger const& t) {

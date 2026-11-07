@@ -26,14 +26,13 @@ else()
     message(STATUS "Found Geode: $ENV{GEODE_SDK}")
 endif()
 
-# Work around a duplicate declaration in some Geode SDK Windows headers.
-# Clang rejects `bool init();` and `virtual bool init();` when both appear
-# in CCFileUtilsWin32 in the same class.
-if (WIN32)
-    set(_geode_win32_header
-        "$ENV{GEODE_SDK}/loader/include/Geode/cocos/platform/win32/CCFileUtilsWin32.h"
-    )
-    if (EXISTS "${_geode_win32_header}")
+# Work around a duplicate declaration in a Geode SDK header.
+# Generated bindings can include this Win32 compatibility header on Android too,
+# so apply the fix on every platform where the SDK checkout contains that file.
+set(_geode_win32_header
+    "$ENV{GEODE_SDK}/loader/include/Geode/cocos/platform/win32/CCFileUtilsWin32.h"
+)
+if (EXISTS "${_geode_win32_header}")
         file(READ "${_geode_win32_header}" _geode_win32_header_content)
         string(FIND "${_geode_win32_header_content}"
             "    virtual bool init();" _duplicate_init_pos)
@@ -47,7 +46,6 @@ if (WIN32)
             file(WRITE "${_geode_win32_header}" "${_geode_win32_header_content}")
             message(STATUS "Applied Geode Win32 duplicate-init compatibility fix")
         endif()
-    endif()
 endif()
 
 add_subdirectory($ENV{GEODE_SDK} ${CMAKE_CURRENT_BINARY_DIR}/geode)
