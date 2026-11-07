@@ -391,39 +391,16 @@ class $modify(AutoPlayLayer, PlayLayer) {
     }
 };
 
-class $modify(AutoPlayPauseLayer, PauseLayer) {
-    void customSetup() {
-        PauseLayer::customSetup();
-
-        if (!PlayLayer::get()) return;
-        auto win = CCDirector::sharedDirector()->getWinSize();
-        auto* menu = CCMenu::create();
-        menu->setPosition(ccp(win.width - 88.f, win.height - 52.f));
-        menu->setID("autoplay-learner-menu");
-
-        auto& controller = autoplay::Controller::get();
-        char const* recordText = controller.isRecording() ? "Stop Record" : "Record Trial";
-        char const* recordFrame = controller.isRecording() ? "GJ_button_06.png" : "GJ_button_01.png";
-
-        auto* recordSprite = ButtonSprite::create(recordText, 104, true, "bigFont.fnt", recordFrame, 28.f, 0.5f);
-        auto* recordButton = CCMenuItemSpriteExtra::create(
-            recordSprite, this, menu_selector(AutoPlayPauseLayer::onRecord));
-        recordButton->setPosition(ccp(0.f, 0.f));
-        menu->addChild(recordButton);
-
-        auto* replaySprite = ButtonSprite::create("Replay Last", 104, true, "bigFont.fnt", "GJ_button_02.png", 28.f, 0.5f);
-        auto* replayButton = CCMenuItemSpriteExtra::create(
-            replaySprite, this, menu_selector(AutoPlayPauseLayer::onReplay));
-        replayButton->setPosition(ccp(0.f, -34.f));
-        menu->addChild(replayButton);
-
-        auto* stopSprite = ButtonSprite::create("Stop Bot", 104, true, "bigFont.fnt", "GJ_button_06.png", 28.f, 0.5f);
-        auto* stopButton = CCMenuItemSpriteExtra::create(
-            stopSprite, this, menu_selector(AutoPlayPauseLayer::onStop));
-        stopButton->setPosition(ccp(0.f, -68.f));
-        menu->addChild(stopButton);
-
-        this->addChild(menu, 100);
+class AutoPlayMenuHandler : public CCNode {
+public:
+    static AutoPlayMenuHandler* create() {
+        auto* ret = new AutoPlayMenuHandler();
+        if (ret->init()) {
+            ret->autorelease();
+            return ret;
+        }
+        delete ret;
+        return nullptr;
     }
 
     void onRecord(CCObject*) {
@@ -456,5 +433,45 @@ class $modify(AutoPlayPauseLayer, PauseLayer) {
     void onStop(CCObject*) {
         autoplay::Controller::get().stop(PlayLayer::get());
         Notification::create("AutoPlay stopped.", NotificationIcon::Info)->show();
+    }
+};
+
+class $modify(AutoPlayPauseLayer, PauseLayer) {
+    void customSetup() {
+        PauseLayer::customSetup();
+
+        if (!PlayLayer::get()) return;
+        auto win = CCDirector::sharedDirector()->getWinSize();
+        auto* handler = AutoPlayMenuHandler::create();
+        if (!handler) return;
+        this->addChild(handler, 100);
+
+        auto* menu = CCMenu::create();
+        menu->setPosition(ccp(win.width - 88.f, win.height - 52.f));
+        menu->setID("autoplay-learner-menu");
+
+        auto& controller = autoplay::Controller::get();
+        char const* recordText = controller.isRecording() ? "Stop Record" : "Record Trial";
+        char const* recordFrame = controller.isRecording() ? "GJ_button_06.png" : "GJ_button_01.png";
+
+        auto* recordSprite = ButtonSprite::create(recordText, 104, true, "bigFont.fnt", recordFrame, 28.f, 0.5f);
+        auto* recordButton = CCMenuItemSpriteExtra::create(
+            recordSprite, handler, menu_selector(AutoPlayMenuHandler::onRecord));
+        recordButton->setPosition(ccp(0.f, 0.f));
+        menu->addChild(recordButton);
+
+        auto* replaySprite = ButtonSprite::create("Replay Last", 104, true, "bigFont.fnt", "GJ_button_02.png", 28.f, 0.5f);
+        auto* replayButton = CCMenuItemSpriteExtra::create(
+            replaySprite, handler, menu_selector(AutoPlayMenuHandler::onReplay));
+        replayButton->setPosition(ccp(0.f, -34.f));
+        menu->addChild(replayButton);
+
+        auto* stopSprite = ButtonSprite::create("Stop Bot", 104, true, "bigFont.fnt", "GJ_button_06.png", 28.f, 0.5f);
+        auto* stopButton = CCMenuItemSpriteExtra::create(
+            stopSprite, handler, menu_selector(AutoPlayMenuHandler::onStop));
+        stopButton->setPosition(ccp(0.f, -68.f));
+        menu->addChild(stopButton);
+
+        this->addChild(menu, 100);
     }
 };
