@@ -6,7 +6,7 @@
   },
   "id": "developer.stylescanner",
   "name": "Style Scanner & Deco Copier",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "developer": "locquach700-del",
   "description": "Copies matching block decoration templates in bounded batches for large levels, and copies visual background/palette settings without copying source map geometry.",
   "platforms": [
