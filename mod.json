@@ -6,9 +6,9 @@
   },
   "id": "developer.stylescanner",
   "name": "Style Scanner & Deco Copier",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "developer": "locquach700-del",
-  "description": "Copies matching block decoration templates in bounded batches for large levels, and copies visual background/palette settings without copying source map geometry.",
+  "description": "Copies matching block and spike decoration, background/ground settings, and static custom color channels used by transferred deco without importing source gameplay or trigger objects.",
   "platforms": [
     "win",
     "android"
