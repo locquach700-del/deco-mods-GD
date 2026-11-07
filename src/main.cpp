@@ -4,9 +4,9 @@
  *
  * Design overview
  * ---------------
- *  - Analyzer   : reads LevelEditorLayer::getAllObjects(), classifies objects by m_objectID
- *                 (+ GameObjectType fallback) into blocks / spikes / portals / pads / orbs and
- *                 builds a 30-unit occupancy grid.
+ *  - Analyzer   : reads LevelEditorLayer::getAllObjects(), classifies every solid/slope and
+ *                 hazard/animated-hazard type plus known decorative spike assets, then builds
+ *                 a 30-unit occupancy grid for block-surface decoration.
  *  - Generator  : turns the grid into a Plan = list of abstract Items (position, scale, rotation,
  *                 role) + colour triggers.  Deterministic (seeded), so preview == apply.
  *  - Preview    : the Plan is drawn into a CCDrawNode overlay.  Nothing is ever added to the level,
@@ -275,12 +275,16 @@ inline void add(Plan& plan, float x, float y, float sx, float sy, float rot, Rol
 
 enum class Kind { None, Block, Spike, Portal, Pad, Orb };
 
-struct PointObj { float x, y, sx, sy; };
+struct PointObj {
+    float x, y, sx, sy;
+    float rotation = 0.f;
+    int objectID = 0;
+};
 
 struct Layout {
     std::unordered_set<uint64_t> solid;
     std::vector<std::pair<int, int>> cells;   // unique solid cells, sorted
-    std::vector<PointObj> spikes, portals, pads, orbs;
+    std::vector<PointObj> blocks, spikes, portals, pads, orbs;
     float minX = 1e9f, minY = 1e9f, maxX = -1e9f, maxY = -1e9f;
     size_t analysed = 0;
 
@@ -293,7 +297,25 @@ struct Layout {
 };
 
 inline Kind classifyById(int id) {
-    static const std::unordered_set<int> spikes{8, 9, 39, 103, 392};
+    // Explicit spike-like editor assets, including decorative/fake, invisible,
+    // coloured, gradient, wide, tiny, pit, blade and 2.2 hazard variants.
+    // Physical hazards are also caught by GameObjectType below, so this table
+    // mainly covers spike pieces whose type is reported as Decoration/None.
+    static const std::unordered_set<int> spikes{
+        8, 9, 18, 19, 20, 21, 39, 103,
+        123, 124, 125, 126, 127, 128, 135, 144, 145,
+        151, 152, 153, 154, 155, 156,
+        177, 178, 179, 191, 198, 199, 205, 216, 217, 218,
+        363, 364, 365, 366, 367, 368, 392, 393,
+        397, 398, 399, 421, 422, 446, 447, 458, 459,
+        720, 740, 741, 742, 768,
+        1711, 1712, 1713, 1714, 1715, 1716, 1717, 1718,
+        1719, 1720, 1721, 1722, 1723, 1724, 1725, 1726,
+        1727, 1728, 1729, 1730, 1731, 1732, 1733, 1734,
+        1735, 1736, 1889, 1890, 1891, 1892,
+        3034, 3035, 3036, 3037, 3038, 3039, 3040, 3041,
+        3042, 3043, 3044, 3045, 3046, 3047, 3048, 3049
+    };
     static const std::unordered_set<int> portals{10, 11, 12, 13, 45, 46, 47, 99, 101, 111, 200, 201,
                                                  202, 203, 286, 287, 660, 745, 747, 1331, 1334, 1933, 2926};
     static const std::unordered_set<int> pads{35, 67, 140, 1332, 3005};
@@ -305,15 +327,24 @@ inline Kind classifyById(int id) {
     return Kind::None;
 }
 
-/// Object-ID tables first (explicit), GameObjectType numeric fallback second (covers every skin/variant).
+/// Object type is the primary classifier: it catches all solid/slope and hazard
+/// skins, including variants introduced in later Geometry Dash updates.
 inline Kind classify(GameObject* obj) {
+    if (!obj) return Kind::None;
     Kind k = classifyById(obj->m_objectID);
     if (k != Kind::None) return k;
-    switch (static_cast<int>(obj->m_objectType)) {
-        case 0: case 25:
-            return Kind::Block;                                   // Solid, Slope
-        case 2:
-            return Kind::Spike;                                   // Hazard
+
+    auto type = obj->m_objectType;
+    if (type == GameObjectType::Solid || type == GameObjectType::Slope ||
+        type == GameObjectType::CollisionObject) {
+        return Kind::Block;
+    }
+    if (type == GameObjectType::Hazard || type == GameObjectType::AnimatedHazard) {
+        return Kind::Spike;
+    }
+
+    // Keep the existing fallback for portals, pads and orbs.
+    switch (static_cast<int>(type)) {
         case 3: case 4: case 5: case 6: case 14: case 15: case 16: case 17: case 18: case 19:
         case 23: case 24: case 26: case 27: case 28: case 33: case 41: case 42:
             return Kind::Portal;
@@ -370,10 +401,14 @@ inline Layout analyze(LevelEditorLayer* editor, std::unordered_set<GameObject*> 
 
         switch (k) {
             case Kind::Block:
-                if (std::max(sx, sy) < 0.45f) continue;   // tiny scaled blocks are detail, not layout
+                if (std::max(sx, sy) < 0.20f) continue;
+                L.blocks.push_back({p.x, p.y, sx, sy, obj->getRotation(), obj->m_objectID});
                 markBlock(L, p.x, p.y, sx, sy);
                 break;
-            case Kind::Spike:  L.spikes.push_back({p.x, p.y, sx, sy});  L.grow(p.x, p.y); break;
+            case Kind::Spike:
+                L.spikes.push_back({p.x, p.y, sx, sy, obj->getRotation(), obj->m_objectID});
+                L.grow(p.x, p.y);
+                break;
             case Kind::Portal: L.portals.push_back({p.x, p.y, sx, sy}); L.grow(p.x, p.y); break;
             case Kind::Pad:    L.pads.push_back({p.x, p.y, sx, sy});    L.grow(p.x, p.y); break;
             case Kind::Orb:    L.orbs.push_back({p.x, p.y, sx, sy});    L.grow(p.x, p.y); break;
@@ -478,11 +513,11 @@ inline void addCorners(Layout const& L, StyleDef const& st, Rng& rng, Plan& plan
     }
 }
 
-/// Motif-specific surface detail on fully enclosed block cells.
+/// Motif-specific surface detail across exposed, isolated and enclosed block cells.
 inline void addInterior(Layout const& L, StyleDef const& st, Plan& plan) {
     for (auto const& c : L.cells) {
         int gx = c.first, gy = c.second;
-        if (!(L.has(gx + 1, gy) && L.has(gx - 1, gy) && L.has(gx, gy + 1) && L.has(gx, gy - 1))) continue;
+        // Decorate exposed edges, isolated blocks and interior tiles alike.
         uint32_t h = hash2(gx, gy);
         float cx = gx * kCell + 15.f, cy = gy * kCell + 15.f;
         switch (st.motif) {
@@ -522,12 +557,50 @@ inline void addInterior(Layout const& L, StyleDef const& st, Plan& plan) {
     }
 }
 
-/// Soft glows around hazards, pads, orbs and portals (stacked blending shapes brighten toward the centre).
-inline void addGameplayAccents(Layout const& L, Plan& plan) {
+/// Spike treatment: soft halo plus a triangular three-line highlight fitted to
+/// each object's scale and rotation. These are no-touch decoration blocks.
+inline void addSpikeAccents(Layout const& L, Plan& plan) {
+    constexpr float kRadToDeg = 57.2957795f;
     for (auto const& s : L.spikes) {
-        add(plan, s.x, s.y + 3.f, 1.7f * s.sx, 1.7f * s.sy, 45.f, Role::Halo);
-        add(plan, s.x, s.y + 3.f, 1.0f * s.sx, 1.0f * s.sy, 45.f, Role::Halo);
+        float rad = s.rotation / kRadToDeg;
+        float c = std::cos(rad), sn = std::sin(rad);
+        auto world = [&](float localX, float localY) -> std::pair<float, float> {
+            // Match the clockwise rotation convention used by drawItem().
+            return {s.x + localX * c + localY * sn,
+                    s.y - localX * sn + localY * c};
+        };
+
+        auto halo = world(0.f, 3.f * s.sy);
+        add(plan, halo.first, halo.second, 1.7f * s.sx, 1.7f * s.sy,
+            45.f + s.rotation, Role::Halo);
+        add(plan, halo.first, halo.second, 1.0f * s.sx, 1.0f * s.sy,
+            45.f + s.rotation, Role::Halo);
+
+        float halfW = 15.f * s.sx;
+        float halfH = 15.f * s.sy;
+        float sideLength = std::sqrt(halfW * halfW + (2.f * halfH) * (2.f * halfH));
+        float sideScale = std::max(0.12f, sideLength / 30.f);
+        float sideAngle = std::atan2(2.f * halfH, halfW) * kRadToDeg;
+        float thickness = std::clamp(0.075f * std::min(s.sx, s.sy), 0.035f, 0.12f);
+
+        auto left = world(-halfW * 0.5f, 0.f);
+        auto right = world(halfW * 0.5f, 0.f);
+        auto base = world(0.f, -halfH);
+        auto tip = world(0.f, halfH);
+        add(plan, left.first, left.second, sideScale, thickness,
+            -sideAngle + s.rotation, Role::Edge);
+        add(plan, right.first, right.second, sideScale, thickness,
+            sideAngle + s.rotation, Role::Edge);
+        add(plan, base.first, base.second, 0.92f * s.sx, thickness,
+            s.rotation, Role::Detail);
+        add(plan, tip.first, tip.second, 0.18f * s.sx, 0.18f * s.sy,
+            45.f + s.rotation, Role::Accent);
     }
+}
+
+/// Soft glows and highlights around spikes, pads, orbs and portals.
+inline void addGameplayAccents(Layout const& L, Plan& plan) {
+    addSpikeAccents(L, plan);
     for (auto const& p : L.pads) {
         add(plan, p.x, p.y - 6.f, 1.6f, 0.4f, 0.f, Role::Halo);
         add(plan, p.x, p.y - 6.f, 0.9f, 0.18f, 0.f, Role::Glow);
@@ -682,7 +755,7 @@ inline Plan buildPlan(LevelEditorLayer* editor, std::unordered_set<GameObject*> 
 
     Layout L = analyze(editor, skip);
     plan.layoutObjects = L.analysed;
-    plan.blocks = L.cells.size();
+    plan.blocks = L.blocks.size();
     plan.hazards = L.spikes.size();
     plan.portals = L.portals.size();
     plan.pads = L.pads.size();
