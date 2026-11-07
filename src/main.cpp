@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <random>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -21,6 +22,7 @@
 using namespace geode::prelude;
 
 class StyleScannerPopup;
+class AutoLevelPopup;
 
 namespace {
     constexpr std::string_view kCodeMagic = "STY5";
@@ -907,6 +909,539 @@ namespace {
         }
 
         editor->levelSettingsUpdated();
+        editor->updateLevelColors();
+        return true;
+    }
+
+
+    // ---------------------------------------------------------------------
+    // Procedural level generator + themed automatic decoration.
+    // It only generates into an empty editor level and never deletes user data.
+    // ---------------------------------------------------------------------
+    struct GeneratedObject {
+        int id = 1;
+        float x = 0.f;
+        float y = 105.f;
+        float rotation = 0.f;
+        float scaleX = 1.f;
+        float scaleY = 1.f;
+        bool anchor = false;
+        bool decoration = false;
+        int primaryColor = 0;
+        int secondaryColor = 0;
+        uint8_t opacity = 255;
+    };
+
+    struct GeneratorPalette {
+        cocos2d::ccColor3B primary;
+        cocos2d::ccColor3B accent;
+        cocos2d::ccColor3B background;
+        cocos2d::ccColor3B ground;
+        cocos2d::ccColor3B line;
+        cocos2d::ccColor3B middle;
+    };
+
+    LevelEditorLayer* g_generatedEditor = nullptr;
+    std::vector<int> g_generatedAnchorIDs;
+    bool g_generatedDecorated = false;
+    uint32_t g_generatorSeed = 0x51A7E123u;
+
+    GeneratorPalette paletteForTheme(int theme) {
+        switch (theme) {
+            case 1: // Inferno
+                return {
+                    cocos2d::ccc3(255, 103, 45), cocos2d::ccc3(255, 210, 70),
+                    cocos2d::ccc3(28, 7, 13), cocos2d::ccc3(73, 20, 20),
+                    cocos2d::ccc3(255, 123, 49), cocos2d::ccc3(104, 28, 35)
+                };
+            case 2: // Ice Crystal
+                return {
+                    cocos2d::ccc3(75, 210, 255), cocos2d::ccc3(205, 245, 255),
+                    cocos2d::ccc3(5, 20, 48), cocos2d::ccc3(18, 54, 93),
+                    cocos2d::ccc3(112, 224, 255), cocos2d::ccc3(27, 91, 133)
+                };
+            case 3: // Emerald Forest
+                return {
+                    cocos2d::ccc3(75, 220, 130), cocos2d::ccc3(197, 255, 116),
+                    cocos2d::ccc3(5, 28, 21), cocos2d::ccc3(15, 67, 44),
+                    cocos2d::ccc3(89, 242, 150), cocos2d::ccc3(23, 91, 55)
+                };
+            case 4: // Galaxy
+                return {
+                    cocos2d::ccc3(177, 92, 255), cocos2d::ccc3(255, 105, 205),
+                    cocos2d::ccc3(17, 8, 43), cocos2d::ccc3(48, 23, 83),
+                    cocos2d::ccc3(214, 133, 255), cocos2d::ccc3(73, 36, 111)
+                };
+            case 5: // Cyber
+                return {
+                    cocos2d::ccc3(36, 245, 218), cocos2d::ccc3(190, 255, 47),
+                    cocos2d::ccc3(3, 24, 34), cocos2d::ccc3(10, 65, 70),
+                    cocos2d::ccc3(42, 255, 237), cocos2d::ccc3(17, 93, 94)
+                };
+            default: // Neon City
+                return {
+                    cocos2d::ccc3(47, 211, 255), cocos2d::ccc3(202, 77, 255),
+                    cocos2d::ccc3(7, 10, 36), cocos2d::ccc3(20, 28, 69),
+                    cocos2d::ccc3(57, 235, 255), cocos2d::ccc3(39, 27, 91)
+                };
+        }
+    }
+
+    void setStaticColorChannel(
+        GJEffectManager* manager,
+        int channelID,
+        cocos2d::ccColor3B color,
+        float opacity = 1.f
+    ) {
+        if (!manager) return;
+        auto* action = manager->getColorAction(channelID);
+        if (!action) return;
+
+        action->m_colorID = channelID;
+        action->m_fromColor = color;
+        action->m_toColor = color;
+        action->m_color = color;
+        action->m_currentOpacity = opacity;
+        action->m_fromOpacity = opacity;
+        action->m_toOpacity = opacity;
+        action->m_duration = 0.f;
+        action->m_playerColor = 0;
+        action->m_blending = true;
+        action->m_copyID = 0;
+        action->m_copyOpacity = false;
+        action->m_paused = false;
+        manager->colorActionChanged(action);
+
+        if (auto* sprite = manager->getColorSprite(channelID)) {
+            sprite->m_color = color;
+            sprite->m_copyColor = color;
+            sprite->m_opacity = opacity * 255.f;
+        }
+    }
+
+    void applyGeneratorPalette(LevelEditorLayer* editor, int theme) {
+        if (!editor || !editor->m_levelSettings) return;
+        auto* manager = editor->m_levelSettings->m_effectManager;
+        const auto palette = paletteForTheme(theme);
+
+        // Two custom channels are used by every generated block and deco piece.
+        setStaticColorChannel(manager, 1, palette.primary);
+        setStaticColorChannel(manager, 2, palette.accent);
+
+        // Geometry Dash's reserved channels tint the background and ground layers.
+        setStaticColorChannel(manager, 1000, palette.background);
+        setStaticColorChannel(manager, 1001, palette.ground);
+        setStaticColorChannel(manager, 1002, palette.line);
+        setStaticColorChannel(manager, 1003, palette.middle);
+        setStaticColorChannel(manager, 1004, palette.middle);
+
+        editor->updateLevelColors();
+        editor->levelSettingsUpdated();
+        editor->updateLevelColors();
+    }
+
+    void applyObjectChannels(GameObject* object, int primary, int secondary) {
+        if (!object) return;
+        if (object->getMainColor()) {
+            object->setMainColorMode(primary);
+            object->updateMainColor();
+        }
+        if (object->getSecondaryColor()) {
+            object->setSecondaryColorMode(secondary);
+            object->updateSecondaryColor();
+        }
+    }
+
+    int randomInt(std::mt19937& rng, int minimum, int maximum) {
+        return std::uniform_int_distribution<int>(minimum, maximum)(rng);
+    }
+
+    void pushGenerated(
+        std::vector<GeneratedObject>& output,
+        int id,
+        float x,
+        float y,
+        bool anchor = false,
+        float rotation = 0.f
+    ) {
+        GeneratedObject object;
+        object.id = id;
+        object.x = x;
+        object.y = y;
+        object.anchor = anchor;
+        object.rotation = rotation;
+        if (anchor) {
+            object.primaryColor = 1;
+            object.secondaryColor = 2;
+        }
+        output.emplace_back(object);
+    }
+
+    void addSpikeGroup(
+        std::vector<GeneratedObject>& output,
+        float x,
+        int count,
+        float y = 105.f,
+        float spacing = 30.f,
+        float rotation = 0.f
+    ) {
+        for (int i = 0; i < count; ++i) {
+            pushGenerated(output, 8, x + spacing * i, y, true, rotation);
+        }
+    }
+
+    void addModePattern(
+        std::vector<GeneratedObject>& output,
+        int mode,
+        float startX,
+        float endX,
+        float step,
+        int difficulty,
+        int layoutStyle,
+        std::mt19937& rng
+    ) {
+        const int maxSpikeGroup = std::clamp(1 + difficulty / 3, 1, 4);
+        const int orbChance = std::clamp(18 + difficulty * 4 + (layoutStyle == 1 ? 18 : 0), 18, 72);
+        int beat = 0;
+
+        for (float x = startX + 135.f; x < endX - 65.f; x += step) {
+            ++beat;
+            const int group = randomInt(rng, 1, maxSpikeGroup);
+            const bool addSaw = randomInt(rng, 0, 99) < (8 + difficulty * 3 + (layoutStyle == 2 ? 12 : 0));
+            const bool addOrb = randomInt(rng, 0, 99) < orbChance;
+            const bool addPlatform = randomInt(rng, 0, 99) < (14 + difficulty * 3 + (layoutStyle == 2 ? 18 : 0));
+
+            if (mode == 1) { // Ship: keep a visible flight lane between floor and ceiling.
+                if (beat % 2 == 0) addSpikeGroup(output, x, group, 105.f, 30.f);
+                if (beat % 3 == 0) addSpikeGroup(output, x + 35.f, 1, 285.f, 30.f, 180.f);
+                if (beat % 2 == 0) {
+                    pushGenerated(output, 1, x + 100.f, 315.f, true);
+                }
+                if (addSaw) pushGenerated(output, 89, x + 45.f, 205.f, true);
+                continue;
+            }
+
+            if (mode == 4) { // Wave: alternate upper/lower blockers to create a readable zig-zag lane.
+                const bool upper = (beat % 2) == 0;
+                pushGenerated(output, 1, x, upper ? 235.f : 165.f, true);
+                if (difficulty >= 5 && beat % 3 == 0) {
+                    pushGenerated(output, 1, x + 45.f, upper ? 165.f : 235.f, true);
+                }
+                if (beat % 2 == 0) addSpikeGroup(output, x + 90.f, 1, 105.f);
+                continue;
+            }
+
+            if (mode == 6 || mode == 7) { // Spider / Swing: staggered platforms with open gaps.
+                if (addPlatform || beat % 2 == 0) {
+                    const float platformY = (beat % 2 == 0) ? 165.f : 225.f;
+                    pushGenerated(output, 1, x, platformY, true);
+                    pushGenerated(output, 1, x + 30.f, platformY, true);
+                    if (difficulty >= 6 && beat % 3 == 0) {
+                        addSpikeGroup(output, x + 30.f, 1, platformY + 30.f);
+                    }
+                }
+                if (addSaw) pushGenerated(output, 98, x + 95.f, 180.f, true);
+                if (addOrb) pushGenerated(output, (beat % 2) ? 36 : 141, x + 55.f, 255.f);
+                continue;
+            }
+
+            // Cube, Ball, UFO and Robot sections.
+            if (mode == 0 || mode == 2 || mode == 3 || mode == 5) {
+                if (mode == 3 && beat % 2 == 0) {
+                    pushGenerated(output, 35, x, 105.f);
+                } else {
+                    addSpikeGroup(output, x, group);
+                }
+
+                if (addPlatform) {
+                    const float py = (beat % 2 == 0) ? 165.f : 195.f;
+                    pushGenerated(output, 1, x + 105.f, py, true);
+                    if (difficulty >= 4) {
+                        pushGenerated(output, 1, x + 135.f, py, true);
+                    }
+                }
+
+                if (addSaw) {
+                    pushGenerated(output, (beat % 2 == 0) ? 88 : 89, x + 115.f, 165.f, true);
+                }
+
+                if (addOrb) {
+                    const int orbIDs[] = {36, 84, 141, 1022, 1330, 1333};
+                    pushGenerated(output, orbIDs[randomInt(rng, 0, 5)], x + 45.f, 190.f + randomInt(rng, 0, 40));
+                }
+
+                if (layoutStyle == 1 && beat % 3 == 0) {
+                    pushGenerated(output, 140, x + 145.f, 105.f);
+                    pushGenerated(output, 36, x + 205.f, 205.f);
+                } else if (layoutStyle == 4 && beat % 4 == 0) {
+                    pushGenerated(output, 67, x + 120.f, 105.f);
+                    pushGenerated(output, 84, x + 185.f, 215.f);
+                }
+
+                if (mode == 2 && beat % 3 == 0) {
+                    pushGenerated(output, 10, x + 170.f, 105.f);
+                    pushGenerated(output, 11, x + 250.f, 105.f);
+                }
+
+                if (mode == 5 && beat % 2 == 0) {
+                    pushGenerated(output, 143, x + 70.f, 165.f, true);
+                }
+            }
+        }
+    }
+
+    bool insertGeneratedBatch(
+        LevelEditorLayer* editor,
+        std::vector<GeneratedObject> const& objects,
+        std::string& error,
+        bool recordAnchors
+    ) {
+        if (!editor) {
+            error = "Open an empty level in the Geometry Dash editor first.";
+            return false;
+        }
+
+        constexpr size_t batchSize = 700;
+        for (size_t start = 0; start < objects.size(); start += batchSize) {
+            const size_t end = std::min(objects.size(), start + batchSize);
+            std::string batch;
+            batch.reserve((end - start) * 48);
+
+            for (size_t i = start; i < end; ++i) {
+                auto const& spec = objects[i];
+                batch += "1,";
+                batch += std::to_string(spec.id);
+                batch += ",2,";
+                batch += std::to_string(spec.x);
+                batch += ",3,";
+                batch += std::to_string(spec.y);
+                batch.push_back(';');
+            }
+
+            auto* created = editor->createObjectsFromString(batch, false, false);
+            if (!created || created->count() != end - start) {
+                error = "Geometry Dash could not create every object in the generated batch. The level may be near its object limit.";
+                return false;
+            }
+
+            for (size_t i = 0; i < end - start; ++i) {
+                auto* object = static_cast<GameObject*>(created->objectAtIndex(static_cast<unsigned int>(i)));
+                if (!object) continue;
+                auto const& spec = objects[start + i];
+                object->setRotation(spec.rotation);
+                object->setScaleX(spec.scaleX);
+                object->setScaleY(spec.scaleY);
+                if (spec.decoration) {
+                    object->m_isNoTouch = true;
+                    object->m_isDecoration = true;
+                    object->setOpacity(spec.opacity);
+                }
+                if (spec.primaryColor > 0) {
+                    applyObjectChannels(object, spec.primaryColor, spec.secondaryColor);
+                }
+                if (recordAnchors && spec.anchor && object->m_uniqueID > 0) {
+                    g_generatedAnchorIDs.push_back(object->m_uniqueID);
+                }
+            }
+        }
+
+        return true;
+    }
+
+    bool generatePlayableLayout(
+        LevelEditorLayer* editor,
+        int difficulty,
+        int layoutStyle,
+        std::string& error
+    ) {
+        if (!editor || !editor->m_objects) {
+            error = "Open an empty Geometry Dash level in the editor first.";
+            return false;
+        }
+        if (editor->m_objects->count() != 0) {
+            error = "To protect your work, create a NEW EMPTY level before generating a layout. Existing objects will not be deleted.";
+            return false;
+        }
+        if (g_generatedEditor == editor && !g_generatedAnchorIDs.empty()) {
+            error = "A layout has already been generated in this editor session. Use a new empty level to create another layout.";
+            return false;
+        }
+
+        g_generatedAnchorIDs.clear();
+        g_generatedEditor = nullptr;
+        g_generatedDecorated = false;
+
+        std::mt19937 rng(++g_generatorSeed);
+        std::vector<GeneratedObject> objects;
+        objects.reserve(1800);
+
+        const float step = std::max(125.f, 300.f - static_cast<float>(difficulty) * 17.f);
+        struct ModeSpan { int portal; float start; float end; int mode; };
+        const ModeSpan spans[] = {
+            {0,    120.f, 1000.f, 0},   // Cube
+            {13,  1100.f, 2000.f, 1},   // Ship
+            {47,  2100.f, 3100.f, 2},   // Ball
+            {111, 3200.f, 4100.f, 3},   // UFO
+            {660, 4200.f, 5100.f, 4},   // Wave
+            {745, 5200.f, 6100.f, 5},   // Robot
+            {1331,6200.f, 7100.f, 6},   // Spider
+            {1933,7200.f, 8100.f, 7}    // Swing
+        };
+
+        // Add the eight common game modes in separate, readable sections.
+        for (size_t i = 0; i < std::size(spans); ++i) {
+            auto const& span = spans[i];
+            if (span.portal != 0) pushGenerated(objects, span.portal, span.start, 105.f);
+            addModePattern(
+                objects, span.mode, span.start, span.end, step,
+                difficulty, layoutStyle, rng
+            );
+            if (i + 1 < std::size(spans)) {
+                pushGenerated(objects, 12, span.end + 20.f, 105.f); // return to Cube
+            }
+        }
+        pushGenerated(objects, 12, 8140.f, 105.f);
+
+        // Vary speed, size and gravity as normal gameplay ingredients.
+        pushGenerated(objects, 200, 500.f, 105.f);
+        pushGenerated(objects, 201, 760.f, 105.f);
+        if (difficulty >= 3) pushGenerated(objects, 202, 3750.f, 105.f);
+        if (difficulty >= 7) pushGenerated(objects, 203, 6800.f, 105.f);
+        if (difficulty >= 4) {
+            pushGenerated(objects, 99, 2750.f, 105.f);
+            pushGenerated(objects, 101, 3000.f, 105.f);
+        }
+
+        if (objects.size() > 12000) {
+            error = "The generated layout exceeded the safe object limit. Choose a shorter or easier generation profile.";
+            return false;
+        }
+
+        if (!insertGeneratedBatch(editor, objects, error, true)) {
+            g_generatedAnchorIDs.clear();
+            return false;
+        }
+
+        g_generatedEditor = editor;
+        editor->updateLevelColors();
+        return true;
+    }
+
+    bool autoDecorateGeneratedLayout(
+        LevelEditorLayer* editor,
+        int theme,
+        std::string& error,
+        size_t& decorationCount
+    ) {
+        decorationCount = 0;
+        if (!editor || editor != g_generatedEditor || g_generatedAnchorIDs.empty()) {
+            error = "Generate a layout FIRST in this same empty level. Auto Deco only decorates a layout created by this tool.";
+            return false;
+        }
+        if (g_generatedDecorated) {
+            error = "This generated layout is already decorated. Generate a fresh layout to try another theme.";
+            return false;
+        }
+
+        applyGeneratorPalette(editor, theme);
+
+        std::vector<GeneratedObject> decorations;
+        decorations.reserve(g_generatedAnchorIDs.size() * 2 + 120);
+        std::mt19937 rng(++g_generatorSeed);
+
+        const std::vector<int> themeAssets = [&]() {
+            switch (theme) {
+                case 1: return std::vector<int>{123, 124, 126, 85, 86, 18, 20};
+                case 2: return std::vector<int>{48, 49, 53, 54, 85, 18, 21};
+                case 3: return std::vector<int>{129, 130, 131, 123, 126, 52, 53};
+                case 4: return std::vector<int>{50, 53, 54, 85, 86, 48, 190};
+                case 5: return std::vector<int>{15, 16, 17, 85, 86, 87, 157, 159};
+                default: return std::vector<int>{50, 51, 53, 85, 86, 18, 20};
+            }
+        }();
+
+        size_t anchorIndex = 0;
+        for (int uniqueID : g_generatedAnchorIDs) {
+            auto* anchor = editor->findGameObject(uniqueID);
+            if (!anchor) continue;
+
+            applyObjectChannels(anchor, 1, 2);
+            const auto pos = anchor->getPosition();
+            const int asset = themeAssets[anchorIndex % themeAssets.size()];
+            const float smallScale = (asset >= 123 && asset <= 131) ? 0.55f : 0.38f;
+
+            if (anchor->m_objectID == 8) {
+                pushGenerated(decorations, asset, pos.x, pos.y + 27.f, false, 0.f);
+                decorations.back().decoration = true;
+                decorations.back().scaleX = smallScale;
+                decorations.back().scaleY = smallScale;
+                decorations.back().primaryColor = 2;
+                decorations.back().secondaryColor = 1;
+                decorations.back().opacity = 220;
+            } else if (anchor->m_objectID == 88 || anchor->m_objectID == 89 || anchor->m_objectID == 98) {
+                pushGenerated(decorations, 85, pos.x, pos.y + 34.f, false, 0.f);
+                decorations.back().decoration = true;
+                decorations.back().scaleX = 0.42f;
+                decorations.back().scaleY = 0.42f;
+                decorations.back().primaryColor = 2;
+                decorations.back().secondaryColor = 1;
+                decorations.back().opacity = 210;
+            } else {
+                pushGenerated(decorations, asset, pos.x - 18.f, pos.y + 24.f, false, 0.f);
+                decorations.back().decoration = true;
+                decorations.back().scaleX = smallScale;
+                decorations.back().scaleY = smallScale;
+                decorations.back().primaryColor = 2;
+                decorations.back().secondaryColor = 1;
+                decorations.back().opacity = 220;
+
+                if (anchorIndex % 2 == 0) {
+                    const int accentAsset = themeAssets[(anchorIndex + 3) % themeAssets.size()];
+                    pushGenerated(decorations, accentAsset, pos.x + 18.f, pos.y + 25.f, false, 45.f);
+                    decorations.back().decoration = true;
+                    decorations.back().scaleX = 0.30f;
+                    decorations.back().scaleY = 0.30f;
+                    decorations.back().primaryColor = 1;
+                    decorations.back().secondaryColor = 2;
+                    decorations.back().opacity = 205;
+                }
+            }
+            ++anchorIndex;
+        }
+
+        // Backdrop ornaments form a visual rhythm behind the playable route.
+        for (float x = 300.f; x < 8200.f; x += 430.f) {
+            const int cloudID = (theme == 3 || theme == 2) ? 49 : 48;
+            pushGenerated(decorations, cloudID, x, 355.f + randomInt(rng, -25, 35));
+            decorations.back().decoration = true;
+            decorations.back().scaleX = 0.75f;
+            decorations.back().scaleY = 0.75f;
+            decorations.back().primaryColor = 1;
+            decorations.back().secondaryColor = 2;
+            decorations.back().opacity = 95;
+
+            const int sparkleIDs[] = {50, 53, 54};
+            pushGenerated(
+                decorations, sparkleIDs[randomInt(rng, 0, 2)],
+                x + 145.f, 295.f + randomInt(rng, -25, 30)
+            );
+            decorations.back().decoration = true;
+            decorations.back().scaleX = 0.32f;
+            decorations.back().scaleY = 0.32f;
+            decorations.back().primaryColor = 2;
+            decorations.back().secondaryColor = 1;
+            decorations.back().opacity = 150;
+        }
+
+        if (decorations.empty()) {
+            error = "No generated blocks or spikes were found to decorate.";
+            return false;
+        }
+
+        if (!insertGeneratedBatch(editor, decorations, error, false)) return false;
+
+        decorationCount = decorations.size();
+        g_generatedDecorated = true;
         editor->updateLevelColors();
         return true;
     }
