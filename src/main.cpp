@@ -1043,13 +1043,18 @@ namespace {
 
     void applyObjectChannels(GameObject* object, int primary, int secondary) {
         if (!object) return;
-        if (object->getMainColor()) {
-            object->setMainColorMode(primary);
-            object->updateMainColor();
+
+        // Newly parsed editor objects may not have their effect-manager link
+        // initialized until the editor refreshes the level palette. Calling
+        // updateMainColor()/updateSecondaryColor() here reaches colorForMode()
+        // too early and can dereference a null manager on Windows.
+        // Assign only the palette channel IDs; updateLevelColors() is called
+        // after the complete batch has been inserted into the editor.
+        if (object->m_baseColor) {
+            object->m_baseColor->m_colorID = std::clamp(primary, 0, 1101);
         }
-        if (object->getSecondaryColor()) {
-            object->setSecondaryColorMode(secondary);
-            object->updateSecondaryColor();
+        if (object->m_detailColor) {
+            object->m_detailColor->m_colorID = std::clamp(secondary, 0, 1101);
         }
     }
 
