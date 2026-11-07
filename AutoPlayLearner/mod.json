@@ -6,8 +6,8 @@
   },
   "id": "developer.autoplaylearner",
   "name": "AutoPlay Learner",
-  "version": "v0.1.0",
+  "version": "v0.2.0",
   "developer": "Community",
-  "description": "Records a trial run's inputs, profiles gameplay modes, and replays the same route.",
+  "description": "Scans editor levels, saves named input routes, and replays saved routes.",
   "tags": ["gameplay", "utility"]
 }
